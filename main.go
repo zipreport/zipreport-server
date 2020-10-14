@@ -33,7 +33,6 @@ func buildServer() (*zptserver.ZptServer, error) {
 	cli := flag.String("cli", "", "zipreport-client binary")
 
 	/* Advanced options */
-	//chromePath := flag.String("chrome", "", "Browser path")
 	readTimeout := flag.Int("httprt", zptserver.DefaultReadTimeout, "HTTP read timeout")
 	writeTimeout := flag.Int("httpwt", zptserver.DefaultWriteTimeout, "HTTP write timeout")
 	debug := flag.Bool("debug", false, "Enable webserver verbose output")
