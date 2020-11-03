@@ -62,11 +62,17 @@ func NewZptServer(cfg *Configuration, router *gin.Engine) *ZptServer {
  * Run Server
  */
 func (z *ZptServer) Run() error {
+	var err error
 	if z.Config.TLS {
-		return z.Server.ListenAndServeTLS(z.Config.SSLCertFile, z.Config.SSLKeyFile);
+		err = z.Server.ListenAndServeTLS(z.Config.SSLCertFile, z.Config.SSLKeyFile);
 	} else {
-		return z.Server.ListenAndServe();
+		err = z.Server.ListenAndServe();
 	}
+	// mask out shutdown as error
+	if err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 /**

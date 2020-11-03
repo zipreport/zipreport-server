@@ -20,11 +20,13 @@ var ErrJobInvalidValues = errors.New("Invalid job values")
 type ZptRenderer struct {
 	RenderEngine
 	cliBinary string
+	noSandbox bool
 }
 
-func NewZptRenderer(binary_path string) *ZptRenderer {
+func NewZptRenderer(binary_path string, noSandbox bool) *ZptRenderer {
 	return &ZptRenderer{
 		cliBinary: binary_path,
+		noSandbox: noSandbox,
 	}
 }
 
@@ -44,7 +46,7 @@ func (z *ZptRenderer) Render(job Job, workdir, dest_file string) (*JobResult, er
 		return nil, err
 	}
 	// build argument list
-	args := append([]string{job.Uri, dest_file}, assembleOptions(job)...)
+	args := append([]string{job.Uri, dest_file}, z.assembleOptions(job)...)
 
 	// use workdir if specified
 	if len(workdir) > 0 {
@@ -108,7 +110,7 @@ func (z *ZptRenderer) ValidateJob(job Job) error {
 	return nil
 }
 
-func assembleOptions(job Job) []string {
+func (z *ZptRenderer) assembleOptions(job Job) []string {
 	opts := []string{
 		"--timeout=" + strconv.Itoa(job.JobTimeout),
 		"--delay=" + strconv.Itoa(job.JobSettlingTime),
@@ -116,6 +118,9 @@ func assembleOptions(job Job) []string {
 		"--margins=" + job.MarginStyle,
 	}
 
+	if (z.noSandbox) {
+		opts = append(opts, "--no-sandbox")
+	}
 	if job.Landscape {
 		opts = append(opts, "--no-portrait")
 	}

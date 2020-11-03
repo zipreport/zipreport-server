@@ -5,7 +5,7 @@ GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 
-all: test build
+all: build
 
 build:
 	$(GOBUILD) -o bin/zipreport-server
