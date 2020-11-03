@@ -6,15 +6,16 @@ import (
 	"flag"
 	"fmt"
 	log "github.com/sirupsen/logrus"
-	"net/http"
 	"os"
 	"os/signal"
-	"time"
+	"syscall"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/storage"
 	"zipreport-server/pkg/zptserver"
 )
+
+const VERSION = "1.0.1"
 
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] argument ...\n\n", os.Args[0])
@@ -37,10 +38,17 @@ func buildServer() (*zptserver.ZptServer, error) {
 	writeTimeout := flag.Int("httpwt", zptserver.DefaultWriteTimeout, "HTTP write timeout")
 	debug := flag.Bool("debug", false, "Enable webserver verbose output")
 	noMetrics := flag.Bool("nometrics", false, "Disable Prometheus endpoint")
+	noSandbox := flag.Bool("no-sandbox", false, "Disable chromium sandbox")
+	version := flag.Bool("version", false, "Show version")
 
 	flag.Parse()
 	if flag.NFlag() == 0 {
 		flag.Usage()
+		os.Exit(0)
+	}
+
+	if *version {
+		fmt.Println(VERSION)
 		os.Exit(0)
 	}
 
@@ -57,7 +65,7 @@ func buildServer() (*zptserver.ZptServer, error) {
 	}
 
 	// Initialize renderer
-	renderer := render.NewZptRenderer(*cli)
+	renderer := render.NewZptRenderer(*cli, *noSandbox)
 	if err := renderer.Init(); err != nil {
 		return nil, err
 	}
@@ -106,24 +114,27 @@ func main() {
 	}
 
 	fmt.Printf("Starting Server in %s:%d...\n", server.Config.Addr, server.Config.Port)
-	cancelChan := make(chan struct{})
 
 	go func() {
-		sigint := make(chan os.Signal, 1)
-		signal.Notify(sigint, os.Interrupt)
-		<-sigint
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-		defer cancel()
-		fmt.Println("\nShutting down...")
-		if err := server.Shutdown(ctx); err != nil {
+		if err = server.Run(); err != nil {
 			log.Fatal(err)
 		}
-		close(cancelChan)
 	}()
 
-	err = server.Run()
-	if err != http.ErrServerClosed {
-		log.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor := make(chan os.Signal, 1)
+	signal.Notify(monitor, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	for {
+		select {
+		case <-monitor:
+			log.Info("Shutting down...")
+			cancel()
+
+		case <-ctx.Done():
+			signal.Stop(monitor)
+			server.Shutdown(ctx)
+			os.Exit(0)
+		}
 	}
-	<-cancelChan
 }

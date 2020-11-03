@@ -17,6 +17,8 @@ HTML to PDF conversion Webservice, written in Go.
 | -httpwt=\<seconds\>| No | Http server write timeout, in seconds (default 300)|
 | -debug | No | Enable verbose output |
 | -nometrics | No | Disable Prometheus metric endpoint|
+| -no-sandbox| No| Disable Chromium sandbox in zipreport-cli|
+| -version| No | Show current zipreport-server version|
 
 ### Available endpoints
 
