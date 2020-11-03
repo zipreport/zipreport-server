@@ -18,7 +18,9 @@ HTML to PDF conversion Webservice, written in Go.
 | -debug | No | Enable verbose output |
 | -nometrics | No | Disable Prometheus metric endpoint|
 | -no-sandbox| No| Disable Chromium sandbox in zipreport-cli|
+| -no-gpu| No | Disable GPU acceleration in zipreport-cli|
 | -version| No | Show current zipreport-server version|
+
 
 ### Available endpoints
 
