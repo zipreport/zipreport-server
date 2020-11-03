@@ -21,12 +21,14 @@ type ZptRenderer struct {
 	RenderEngine
 	cliBinary string
 	noSandbox bool
+	noGpu     bool
 }
 
-func NewZptRenderer(binary_path string, noSandbox bool) *ZptRenderer {
+func NewZptRenderer(binary_path string, noSandbox bool, noGpu bool) *ZptRenderer {
 	return &ZptRenderer{
 		cliBinary: binary_path,
 		noSandbox: noSandbox,
+		noGpu:     noGpu,
 	}
 }
 
@@ -120,6 +122,9 @@ func (z *ZptRenderer) assembleOptions(job Job) []string {
 
 	if (z.noSandbox) {
 		opts = append(opts, "--no-sandbox")
+	}
+	if (z.noGpu) {
+		opts = append(opts, "--no-gpu")
 	}
 	if job.Landscape {
 		opts = append(opts, "--no-portrait")

@@ -15,7 +15,7 @@ import (
 	"zipreport-server/pkg/zptserver"
 )
 
-const VERSION = "1.0.1"
+const VERSION = "1.0.2"
 
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] argument ...\n\n", os.Args[0])
@@ -39,6 +39,7 @@ func buildServer() (*zptserver.ZptServer, error) {
 	debug := flag.Bool("debug", false, "Enable webserver verbose output")
 	noMetrics := flag.Bool("nometrics", false, "Disable Prometheus endpoint")
 	noSandbox := flag.Bool("no-sandbox", false, "Disable chromium sandbox")
+	noGpu := flag.Bool("no-gpu", false, "Disable GPU acceleration")
 	version := flag.Bool("version", false, "Show version")
 
 	flag.Parse()
@@ -65,7 +66,7 @@ func buildServer() (*zptserver.ZptServer, error) {
 	}
 
 	// Initialize renderer
-	renderer := render.NewZptRenderer(*cli, *noSandbox)
+	renderer := render.NewZptRenderer(*cli, *noSandbox, *noGpu)
 	if err := renderer.Init(); err != nil {
 		return nil, err
 	}
