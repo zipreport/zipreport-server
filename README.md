@@ -45,7 +45,7 @@ HTML to PDF conversion Webservice, written in Go.
 | ignore_ssl_errors| No | If true, ssl errors in referenced resources will be ignored|
 | secure_only | No | If true, only secure content is allowed |
 
-#
+
 
 **settling_time** (default: 200)
 
@@ -107,6 +107,17 @@ Conversion time histogram, in seconds. The upper bound is 120.
 
 If -apikey is specified, zipreport-server will perform header-based authentication with
 the designated key. Clients should pass the key in the "X-Auth-Key" header.
+
+### Prometheus Endpoint
+
+If -nometrics is omitted, a Prometheus endpoint will be available in */metrics*, with some traditional go metrics and
+in addition, with the following ones:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| total_request_success | Counter | Total successful conversion requests |
+| total_request_error | Counter | Total failed conversion requests |
+| conversion_time | Histogram | PDF conversion time, in seconds |
 
 
 ### Build
