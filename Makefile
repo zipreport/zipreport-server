@@ -8,7 +8,7 @@ GOGET=$(GOCMD) get
 all: build
 
 build:
-	$(GOBUILD) -o bin/zipreport-server
+	$(GOBUILD) cmd/zipreport-server/ -o bin/zipreport-server
 
 test:
 	$(GOTEST) -v pkg/render/*

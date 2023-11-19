@@ -1,4 +1,4 @@
-package zptserver
+package apiserver
 
 import "github.com/gin-gonic/gin"
 

@@ -36,7 +36,7 @@ type renderRequest struct {
 	JobInfo    render.Job
 }
 
-var zipHeader = [4]byte{0x50, 0x4b, 0x03, 0x04,}
+var zipHeader = [4]byte{0x50, 0x4b, 0x03, 0x04}
 var errInvalidFileType = errors.New("Invalid file type")
 var errInvalidPageSize = errors.New("Invalid page size")
 var errInvalidMargins = errors.New("Invalid margin setting")
@@ -51,28 +51,28 @@ func strExists(needle string, list []string) bool {
 			return true
 		}
 	}
-	return false;
+	return false
 }
 
 func optionalIntValue(ctx *gin.Context, name string, defaultValue int) int {
 	if v, exists := ctx.GetPostForm(name); !exists {
-		return defaultValue;
+		return defaultValue
 	} else {
 		// if exists but its not valid int, return default value
 		if r, err := strconv.Atoi(v); err != nil {
-			return defaultValue;
+			return defaultValue
 		} else {
-			return r;
+			return r
 		}
 	}
 }
 
 func optionalBoolValue(ctx *gin.Context, name string, defaultValue bool) bool {
 	if v, exists := ctx.GetPostForm(name); !exists {
-		return defaultValue;
+		return defaultValue
 	} else {
-		v := strings.ToLower(v);
-		return strExists(v, []string{"true", "1", "t", "y",})
+		v := strings.ToLower(v)
+		return strExists(v, []string{"true", "1", "t", "y"})
 	}
 }
 
@@ -113,8 +113,8 @@ func parseRenderRequest(c *gin.Context) (*renderRequest, error) {
 			PageSize:          pagesz,
 			MarginStyle:       margins,
 			Landscape:         optionalBoolValue(c, POST_LANDSCAPE, false),
-			JobSettlingTime:   optionalIntValue(c, POST_SETTLING_TIME, render.JobDefaultSettlingTime),
-			JobTimeout:        optionalIntValue(c, POST_RENDER_TIMEOUT, render.JobDefaultTimeout),
+			JobSettlingTimeMs: optionalIntValue(c, POST_SETTLING_TIME, render.JobDefaultSettlingTime),
+			JobTimeoutS:       optionalIntValue(c, POST_RENDER_TIMEOUT, render.JobDefaultTimeout),
 			UseJSEvent:        optionalBoolValue(c, POST_JS_EVENT, false),
 			JSTimeout:         optionalIntValue(c, POST_JS_TIMEOUT, render.JobDefaultJSTimeout),
 			NoInsecureContent: optionalBoolValue(c, POST_NO_INSECURE_CONTENT, false),

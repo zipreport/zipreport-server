@@ -1,17 +1,17 @@
-package zptserver
+package apiserver
 
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"github.com/toorop/gin-logrus"
+	"zipreport-server/api/v1"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
-	"zipreport-server/pkg/storage"
-	"zipreport-server/api/v1"
+	"zipreport-server/pkg/zpt"
 )
 
-func DefaultRouter(cfg *Configuration, s storage.Backend, r render.RenderEngine, m *monitor.Metrics) * gin.Engine {
+func DefaultRouter(cfg *Configuration, s zpt.Backend, r render.RenderEngine, m *monitor.Metrics) *gin.Engine {
 
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
-	"zipreport-server/pkg/storage"
+	"zipreport-server/pkg/zpt"
 )
 
-func POST_Render(ctx *gin.Context, s storage.Backend, r render.RenderEngine, m *monitor.Metrics) {
+func POST_Render(ctx *gin.Context, s zpt.Backend, r render.RenderEngine, m *monitor.Metrics) {
 	req, err := parseRenderRequest(ctx)
 	if err != nil {
 		m.IncFailed()
@@ -34,7 +34,7 @@ func POST_Render(ctx *gin.Context, s storage.Backend, r render.RenderEngine, m *
 
 	report := filepath.Join(working_dir, REPORT_DEFAULT)
 	req.JobInfo.Uri = filepath.Join(working_dir, "report.html")
-	result, err := r.Render(req.JobInfo, working_dir, REPORT_DEFAULT);
+	result, err := r.Render(req.JobInfo, working_dir, REPORT_DEFAULT)
 	logRenderJob(result, working_dir, report)
 
 	if err != nil {

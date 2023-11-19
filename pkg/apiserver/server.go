@@ -1,4 +1,4 @@
-package zptserver
+package apiserver
 
 import (
 	"context"
@@ -26,13 +26,15 @@ type Configuration struct {
 	ApiKey       string
 }
 
-type ZptServer struct {
+type ApiServer struct {
 	Config *Configuration
 	Server *http.Server
 }
 
-/**
-  Build server configuration with sensible defaults
+/*
+*
+
+	Build server configuration with sensible defaults
 */
 func NewConfiguration() *Configuration {
 	return &Configuration{
@@ -43,14 +45,15 @@ func NewConfiguration() *Configuration {
 		Debug:        false,
 	}
 }
+
 /***
  * Assemble new Server
  */
-func NewZptServer(cfg *Configuration, router *gin.Engine) *ZptServer {
-	return &ZptServer{
+func NewApiServer(cfg *Configuration, router *gin.Engine) *ApiServer {
+	return &ApiServer{
 		Config: cfg,
 		Server: &http.Server{
-			Addr:          fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port),
+			Addr:         fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port),
 			Handler:      router,
 			ReadTimeout:  time.Duration(cfg.ReadTimeout) * time.Second,
 			WriteTimeout: time.Duration(cfg.WriteTimeout) * time.Second,
@@ -61,12 +64,12 @@ func NewZptServer(cfg *Configuration, router *gin.Engine) *ZptServer {
 /**
  * Run Server
  */
-func (z *ZptServer) Run() error {
+func (z *ApiServer) Run() error {
 	var err error
 	if z.Config.TLS {
-		err = z.Server.ListenAndServeTLS(z.Config.SSLCertFile, z.Config.SSLKeyFile);
+		err = z.Server.ListenAndServeTLS(z.Config.SSLCertFile, z.Config.SSLKeyFile)
 	} else {
-		err = z.Server.ListenAndServe();
+		err = z.Server.ListenAndServe()
 	}
 	// mask out shutdown as error
 	if err != http.ErrServerClosed {
@@ -78,7 +81,6 @@ func (z *ZptServer) Run() error {
 /**
  * Shutdown Server
  */
-func (z *ZptServer) Shutdown(ctx context.Context) error {
+func (z *ApiServer) Shutdown(ctx context.Context) error {
 	return z.Server.Shutdown(ctx)
 }
-

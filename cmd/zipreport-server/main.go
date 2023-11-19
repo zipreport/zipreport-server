@@ -9,10 +9,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"zipreport-server/pkg/apiserver"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
-	"zipreport-server/pkg/storage"
-	"zipreport-server/pkg/zptserver"
+	"zipreport-server/pkg/zpt"
 )
 
 const VERSION = "1.0.2"
@@ -22,20 +22,20 @@ func usage() {
 	flag.PrintDefaults()
 }
 
-func buildServer() (*zptserver.ZptServer, error) {
+func buildServer() (*apiserver.ApiServer, error) {
 	flag.Usage = usage
 	/* General options */
 	addr := flag.String("addr", "127.0.0.1", "Address to listen")
-	port := flag.Int("port", zptserver.DefaultPort, "Port to listen")
+	port := flag.Int("port", apiserver.DefaultPort, "Port to listen")
 	keyFile := flag.String("certkey", "", "Certificate key file")
 	crtFile := flag.String("certificate", "", "Certificate file")
 	apiKey := flag.String("apikey", "", "API access key")
-	storagePath := flag.String("storage", "", "Temporary storage path")
+	storagePath := flag.String("zpt", "", "Temporary zpt path")
 	cli := flag.String("cli", "", "zipreport-client binary")
 
 	/* Advanced options */
-	readTimeout := flag.Int("httprt", zptserver.DefaultReadTimeout, "HTTP read timeout")
-	writeTimeout := flag.Int("httpwt", zptserver.DefaultWriteTimeout, "HTTP write timeout")
+	readTimeout := flag.Int("httprt", apiserver.DefaultReadTimeout, "HTTP read timeout")
+	writeTimeout := flag.Int("httpwt", apiserver.DefaultWriteTimeout, "HTTP write timeout")
 	debug := flag.Bool("debug", false, "Enable webserver verbose output")
 	noMetrics := flag.Bool("nometrics", false, "Disable Prometheus endpoint")
 	noSandbox := flag.Bool("no-sandbox", false, "Disable chromium sandbox")
@@ -58,7 +58,7 @@ func buildServer() (*zptserver.ZptServer, error) {
 	}
 
 	if len(*storagePath) == 0 {
-		return nil, errors.New("-storage parameter missing")
+		return nil, errors.New("-zpt parameter missing")
 	}
 
 	if *debug {
@@ -71,14 +71,14 @@ func buildServer() (*zptserver.ZptServer, error) {
 		return nil, err
 	}
 
-	// Initialize storage
-	storage := storage.NewDiskBackend(*storagePath)
+	// Initialize zpt
+	storage := zpt.NewDiskBackend(*storagePath)
 	if err := storage.Init(); err != nil {
 		return nil, err
 	}
 
 	// Server configuration
-	cfg := zptserver.NewConfiguration()
+	cfg := apiserver.NewConfiguration()
 	cfg.Addr = *addr
 	cfg.Port = *port
 	cfg.TLS = len(*crtFile) > 0 && len(*keyFile) > 0
@@ -95,7 +95,7 @@ func buildServer() (*zptserver.ZptServer, error) {
 		metrics = monitor.NewMetrics()
 	}
 	// http server
-	server := zptserver.NewZptServer(cfg, zptserver.DefaultRouter(cfg, storage, renderer, metrics))
+	server := apiserver.NewApiServer(cfg, apiserver.DefaultRouter(cfg, storage, renderer, metrics))
 	return server, nil
 }
 
