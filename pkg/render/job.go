@@ -57,11 +57,17 @@ func NewRenderJob(z *zpt.ZptReader, id uuid.UUID) *Job {
 	return &Job{
 		Id:                id,
 		Zpt:               z,
+		IndexFile:         zpt.DefaultScriptName,
 		PageSize:          PageA4,
 		MarginStyle:       MarginStandard,
+		MarginLeft:        0,
+		MarginRight:       0,
+		MarginTop:         0,
+		MarginBottom:      0,
 		Landscape:         false,
 		JobSettlingTimeMs: JobDefaultSettlingTime,
 		JobTimeoutS:       JobDefaultTimeout,
+		JsTimeoutS:        JobDefaultJsTimeout,
 		UseJSEvent:        false,
 		IgnoreSSLErrors:   true,
 	}

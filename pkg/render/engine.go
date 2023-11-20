@@ -137,7 +137,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Str("id", job.Id.String()).
 			Int("size", len(result.Output)).
 			Float64("elapsedTime", result.ElapsedTime).
-			Msgf("finished job successfully in %f seconds", result.ElapsedTime)
+			Msgf("finished job in %f seconds", result.ElapsedTime)
 	} else {
 		e.log.Info().
 			Str("id", job.Id.String()).

@@ -63,6 +63,11 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 				Msg("error writing http response")
 		}
 		return
+	} else {
+		z.log.Warn().
+			Err(err).
+			Str("uri", name).
+			Msg("error serving file")
 	}
 	resp.WriteHeader(http.StatusNotFound)
 }
