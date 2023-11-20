@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 	"net/http"
 	"time"
 )
@@ -14,7 +15,7 @@ const (
 	DefaultPort         = 6543
 )
 
-type Configuration struct {
+type ApiOptions struct {
 	Addr         string
 	Port         int
 	TLS          bool
@@ -24,32 +25,30 @@ type Configuration struct {
 	WriteTimeout int
 	Debug        bool
 	ApiKey       string
+	UseMetrics   bool
+	Context      context.Context
+	Log          zerolog.Logger
 }
 
 type ApiServer struct {
-	Config *Configuration
+	Config *ApiOptions
 	Server *http.Server
 }
 
-/*
-*
-
-	Build server configuration with sensible defaults
-*/
-func NewConfiguration() *Configuration {
-	return &Configuration{
+func DefaultApiOptions(ctx context.Context, l zerolog.Logger) *ApiOptions {
+	return &ApiOptions{
 		Port:         DefaultPort,
 		TLS:          false,
 		ReadTimeout:  DefaultReadTimeout,
 		WriteTimeout: DefaultWriteTimeout,
 		Debug:        false,
+		Context:      ctx,
+		Log:          l,
+		UseMetrics:   true,
 	}
 }
 
-/***
- * Assemble new Server
- */
-func NewApiServer(cfg *Configuration, router *gin.Engine) *ApiServer {
+func NewApiServer(cfg *ApiOptions, router *gin.Engine) *ApiServer {
 	return &ApiServer{
 		Config: cfg,
 		Server: &http.Server{
@@ -61,14 +60,19 @@ func NewApiServer(cfg *Configuration, router *gin.Engine) *ApiServer {
 	}
 }
 
-/**
- * Run Server
- */
 func (z *ApiServer) Run() error {
 	var err error
 	if z.Config.TLS {
+		z.Config.Log.Info().
+			Str("certFile", z.Config.SSLCertFile).
+			Str("keyFile", z.Config.SSLKeyFile).
+			Str("address", z.Server.Addr).
+			Msg("starting API webserver with SSL")
 		err = z.Server.ListenAndServeTLS(z.Config.SSLCertFile, z.Config.SSLKeyFile)
 	} else {
+		z.Config.Log.Info().
+			Str("address", z.Server.Addr).
+			Msg("starting API webserver")
 		err = z.Server.ListenAndServe()
 	}
 	// mask out shutdown as error
@@ -78,9 +82,8 @@ func (z *ApiServer) Run() error {
 	return nil
 }
 
-/**
- * Shutdown Server
- */
 func (z *ApiServer) Shutdown(ctx context.Context) error {
+	z.Config.Log.Info().
+		Msg("shutting down API webserver")
 	return z.Server.Shutdown(ctx)
 }

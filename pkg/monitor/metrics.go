@@ -64,13 +64,13 @@ func (m *Metrics) DecBrowsers() {
 	}
 }
 
-func (m *Metrics) IncFailed() {
+func (m *Metrics) IncFailedOps() {
 	if m != nil {
 		m.FailedOps.Inc()
 	}
 }
 
-func (m *Metrics) IncSuccess() {
+func (m *Metrics) IncSuccessOps() {
 	if m != nil {
 		m.SuccessOps.Inc()
 	}

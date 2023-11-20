@@ -11,6 +11,9 @@ import (
 	"zipreport-server/pkg/zpt"
 )
 
+const DefaultConcurrency = 8
+const DefaultBasePort = 42000
+
 type EngineOptions struct {
 	HttpDebug   bool
 	Concurrency int
@@ -30,8 +33,8 @@ type Engine struct {
 func DefaultEngineOptions(ctx context.Context, l zerolog.Logger) *EngineOptions {
 	return &EngineOptions{
 		HttpDebug:   false,
-		Concurrency: 8,
-		BasePort:    42000,
+		Concurrency: DefaultConcurrency,
+		BasePort:    DefaultBasePort,
 		Context:     ctx,
 		log:         l,
 	}
@@ -53,40 +56,63 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		Any("Job", job).
 		Msg("starting job")
 	server := e.ServerPool.BuildServer(job.Zpt, e.Opts.HttpDebug)
-	e.log.Debug().
+	e.log.Info().
 		Str("id", job.Id.String()).
 		Str("address", server.Server.Addr).
 		Msg("server address")
 	browser := e.GetBrowser()
 	defer e.BrowserPool.Put(browser)
 	defer e.ServerPool.RemoveServer(server)
+	e.log.Info().
+		Str("id", job.Id.String()).
+		Msg("Browser acquired")
 
 	start := time.Now()
 	browser.MustIgnoreCertErrors(job.IgnoreSSLErrors)
-	url := "http://" + server.Server.Addr
+	url := "http://" + server.Server.Addr + "/" + job.IndexFile
 	page := browser.
-		MustPage().
-		Timeout(time.Duration(job.JobTimeoutS) * time.Second)
+		Timeout(time.Duration(job.JobTimeoutS) * time.Second).
+		MustPage()
+	defer page.MustClose()
 
 	// EachEvent allows us to achieve the same functionality as above.
 	if job.UseJSEvent {
 		e.log.Debug().
 			Str("id", job.Id.String()).
-			Msg("using JS console message")
+			Msg("using JS trigger - console message")
 		// wait for complete event before proceeding
+		timeout := make(chan bool, 1)
 		done := make(chan struct{})
-		go page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
-			if page.MustObjectToJSON(e.Args[0]).String() == "zpt-view-ready" {
+		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+			if page.MustObjectToJSON(evt.Args[0]).String() == "zpt-view-ready" {
+				e.log.Debug().
+					Str("id", job.Id.String()).
+					Msg("console message received")
 				close(done)
 			}
 		})()
+
+		// JS timeout procedure
+		cancel := time.AfterFunc(time.Duration(job.JsTimeoutS)*time.Second, func() {
+			close(timeout)
+		})
+
 		wait := page.WaitEvent(&proto.PageLoadEventFired{})
 		page.MustNavigate(url).MustWaitLoad()
 		wait()
-		<-done
+		select {
+		case <-done:
+			cancel.Stop()
+			break
+		case <-timeout:
+			e.log.Warn().
+				Str("id", job.Id.String()).
+				Msg("waiting for console message timed out")
+			close(done)
+		}
 	} else {
 		e.log.Debug().
-			Str("ID", job.Id.String()).
+			Str("id", job.Id.String()).
 			Msg("using regular rendering")
 		// no JS event, proceed as expected
 		page.MustNavigate(url).MustWaitLoad()
@@ -105,16 +131,17 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		Output:      buf,
 		Error:       err,
 	}
-	page.MustClose()
 
 	if err == nil {
 		e.log.Info().
-			Str("ID", job.Id.String()).
-			Int("Size", len(result.Output)).
+			Str("id", job.Id.String()).
+			Int("size", len(result.Output)).
+			Float64("elapsedTime", result.ElapsedTime).
 			Msgf("finished job successfully in %f seconds", result.ElapsedTime)
 	} else {
 		e.log.Info().
-			Str("ID", job.Id.String()).
+			Str("id", job.Id.String()).
+			Float64("elapsedTime", result.ElapsedTime).
 			Err(err).
 			Msg("job failed")
 

@@ -7,26 +7,28 @@ import (
 )
 
 // Page Sizes
-const PAGE_A3 = "A3"
-const PAGE_A4 = "A4"
-const PAGE_A5 = "A5"
-const PAGE_LETTER = "Letter"
-const PAGE_LEGAL = "Legal"
-const PAGE_TABLOID = "Tabloid"
+const PageA3 = "A3"
+const PageA4 = "A4"
+const PageA5 = "A5"
+const PageLetter = "Letter"
+const PageLegal = "Legal"
+const PageTabloid = "Tabloid"
 
 // Margins
-const MARGIN_STANDARD = "standard"
-const MARGIN_NONE = "none"
-const MARGIN_MINIMAL = "minimal"
-const MARGIN_CUSTOM = "custom"
+const MarginStandard = "standard"
+const MarginNone = "none"
+const MarginMinimal = "minimal"
+const MarginCustom = "custom"
 
 // Defaults
 const JobDefaultTimeout = 120
-const JobDefaultSettlingTime = 30
+const JobDefaultJsTimeout = 30
+const JobDefaultSettlingTime = 200
 
 type Job struct {
 	Id                uuid.UUID
 	Zpt               *zpt.ZptReader
+	IndexFile         string
 	PageSize          string
 	MarginStyle       string
 	MarginLeft        float64 // custom margins
@@ -36,6 +38,7 @@ type Job struct {
 	Landscape         bool
 	JobSettlingTimeMs int
 	JobTimeoutS       int
+	JsTimeoutS        int
 	UseJSEvent        bool
 	IgnoreSSLErrors   bool
 }
@@ -47,12 +50,15 @@ type JobResult struct {
 	Error       error
 }
 
-func NewRenderJob(z *zpt.ZptReader) *Job {
+var ValidPageSizes = []string{PageA3, PageA4, PageA5, PageLetter, PageLegal, PageTabloid}
+var ValidMarginStyle = []string{MarginNone, MarginStandard, MarginMinimal, MarginCustom}
+
+func NewRenderJob(z *zpt.ZptReader, id uuid.UUID) *Job {
 	return &Job{
-		Id:                uuid.New(),
+		Id:                id,
 		Zpt:               z,
-		PageSize:          PAGE_A4,
-		MarginStyle:       MARGIN_STANDARD,
+		PageSize:          PageA4,
+		MarginStyle:       MarginStandard,
 		Landscape:         false,
 		JobSettlingTimeMs: JobDefaultSettlingTime,
 		JobTimeoutS:       JobDefaultTimeout,
@@ -86,17 +92,17 @@ func (r *Job) ToPDFOptions() *proto.PagePrintToPDF {
 // calcPaperSize()(width, height)
 func (r *Job) calcPaperSize() (*float64, *float64) {
 	switch r.PageSize {
-	case PAGE_LETTER:
+	case PageLetter:
 		return wrap(8.5), wrap(11)
-	case PAGE_LEGAL:
+	case PageLegal:
 		return wrap(8.5), wrap(14)
-	case PAGE_TABLOID:
+	case PageTabloid:
 		return wrap(11), wrap(17)
-	case PAGE_A5:
+	case PageA5:
 		return wrap(5.8), wrap(8.3)
-	case PAGE_A3:
+	case PageA3:
 		return wrap(11.7), wrap(16.5)
-	default: // PAGE_A4
+	default: // PageA4
 		return wrap(8.3), wrap(11.7)
 	}
 }
@@ -104,13 +110,13 @@ func (r *Job) calcPaperSize() (*float64, *float64) {
 // calcPaperMargin()(top, bottom, left, right
 func (r *Job) calcPaperMargin() (*float64, *float64, *float64, *float64) {
 	switch r.MarginStyle {
-	case MARGIN_MINIMAL:
+	case MarginMinimal:
 		return wrap(0.2), wrap(0.2), wrap(0.2), wrap(0.2)
-	case MARGIN_NONE:
+	case MarginNone:
 		return wrap(0), wrap(0), wrap(0), wrap(0)
-	case MARGIN_CUSTOM:
+	case MarginCustom:
 		return wrap(r.MarginTop), wrap(r.MarginBottom), wrap(r.MarginLeft), wrap(r.MarginRight)
-	// default: MARGIN_STANDARD
+	// default: MarginStandard
 	default:
 		return wrap(0.4), wrap(0.4), wrap(0.4), wrap(0.4)
 	}

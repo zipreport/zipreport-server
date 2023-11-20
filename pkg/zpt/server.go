@@ -16,6 +16,8 @@ import (
 const ReadTimeout = time.Duration(300) * time.Second
 const WriteTimeout = time.Duration(300) * time.Second
 
+const DefaultScriptName = "report.html"
+
 var ErrAlreadyInitialized = errors.New("Server already initialized")
 var ErrAlreadyShutdown = errors.New("Server already shutdown")
 
@@ -45,7 +47,7 @@ func NewZptServer(reader *ZptReader, port int, l zerolog.Logger, debug bool) *Zp
 func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	var name string
 	if req.RequestURI == "/" {
-		name = "index.html"
+		name = DefaultScriptName
 	} else {
 		_, i := utf8.DecodeRuneInString(req.RequestURI)
 		name = req.RequestURI[i:]
@@ -55,7 +57,11 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		resp.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name)))
 		resp.WriteHeader(http.StatusOK)
 		_, err = resp.Write(buf)
-		z.log.Err(err)
+		if err != nil {
+			z.log.Err(err).
+				Str("address", z.Server.Addr).
+				Msg("error writing http response")
+		}
 		return
 	}
 	resp.WriteHeader(http.StatusNotFound)
@@ -66,12 +72,15 @@ func (z *ZptServer) Run() error {
 	err := z.Server.ListenAndServe()
 	// mask out shutdown as error
 	if err != http.ErrServerClosed {
-		z.log.Warn().Msgf("Server %s exited with error", z.Server.Addr)
+		z.log.Warn().
+			Str("address", z.Server.Addr).
+			Err(err).
+			Msg("server exited with error")
 		return err
 	}
 	return nil
 }
 func (z *ZptServer) Shutdown(ctx context.Context) error {
-	z.log.Info().Msg(fmt.Sprintf("Shutting down server on %s", z.Server.Addr))
+	z.log.Info().Str("address", z.Server.Addr).Msg("Shutting down server ")
 	return z.Server.Shutdown(ctx)
 }
