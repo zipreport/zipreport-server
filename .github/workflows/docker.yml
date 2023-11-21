@@ -1,37 +1,25 @@
-# Adapted from https://raw.githubusercontent.com/go-rod/rod/main/.github/workflows/docker.yml
+name: Build and publish a Docker image to ghcr.io
+on:
 
-name: Release docker image
+  # publish on releases, e.g. v2.1.13 (image tagged as "2.1.13" - "v" prefix is removed)
+  release:
+    types: [ published ]
 
-on: [push, pull_request]
-
-permissions:
-  packages: write
+  # publish on pushes to the main branch (image tagged as "latest")
+  push:
+    branches:
+      - master
 
 jobs:
-  docker-amd:
-    runs-on: ubuntu-22.04
+  docker_publish:
+    runs-on: "ubuntu-20.04"
 
     steps:
-      - uses: actions/setup-go@v4
+      - uses: actions/checkout@v2
+
+      # https://github.com/marketplace/actions/push-to-ghcr
+      - name: Build and publish a Docker image for ${{ github.repository }}
+        uses: macbre/push-to-ghcr@master
         with:
-          go-version: 1.19
-
-      - uses: docker/setup-qemu-action@v2
-      - uses: actions/checkout@v3
-      - run: go run ./cmd/build-docker/main.go $GITHUB_REF
-        env:
-          GITHUB_TOKEN: ${{secrets.ACCESS_TOKEN}}
-
-  docker-arm:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - uses: actions/setup-go@v4
-        with:
-          go-version: 1.19
-      - uses: docker/setup-qemu-action@v2
-      - uses: actions/checkout@v3
-      - run: go run ./cmd/build-docker/main.go $GITHUB_REF
-        env:
-          GITHUB_TOKEN: ${{secrets.ACCESS_TOKEN}}
-          ARCH: arm
+          image_name: ${{ github.repository }}  # it will be lowercased internally
+          github_token: ${{ secrets.ACCESS_TOKEN }}
