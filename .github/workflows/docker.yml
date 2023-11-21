@@ -17,9 +17,7 @@ jobs:
           go-version: 1.19
 
       - uses: docker/setup-qemu-action@v2
-
       - uses: actions/checkout@v3
-
       - run: go run ./cmd/build-docker/main.go $GITHUB_REF
         env:
           GITHUB_TOKEN: ${{secrets.ACCESS_TOKEN}}
@@ -31,11 +29,8 @@ jobs:
       - uses: actions/setup-go@v4
         with:
           go-version: 1.19
-
       - uses: docker/setup-qemu-action@v2
-
       - uses: actions/checkout@v3
-
       - run: go run ./cmd/build-docker/main.go $GITHUB_REF
         env:
           GITHUB_TOKEN: ${{secrets.ACCESS_TOKEN}}
