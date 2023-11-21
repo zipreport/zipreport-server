@@ -78,14 +78,10 @@ func releaseDev(at archType) {
 
 func releaseWithVer(at archType, ver string) {
 	login()
-	build(at)
 
 	verImage := registry + ":" + ver
-	utils.Exec("docker manifest create", verImage, archAmd.tag(), archArm.tag())
-	utils.Exec("docker manifest push", verImage)
-
-	utils.Exec("docker manifest create", registry, archAmd.tag(), archArm.tag())
-	utils.Exec("docker manifest push", registry)
+	utils.Exec("docker build -f=Dockerfile", "--platform", at.platform(), "-t", verImage, description(), ".")
+	utils.Exec("docker push", verImage)
 }
 
 func description() string {
