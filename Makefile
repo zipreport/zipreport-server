@@ -8,12 +8,13 @@ GOGET=$(GOCMD) get
 all: build
 
 build:
-	$(GOBUILD) -o bin/zipreport-server
+	$(GOBUILD) -o bin/zipreport-server cmd/zipreport-server/main.go
+	$(GOBUILD) -o bin/browser-update cmd/browser-update/main.go
 
 test:
 	$(GOTEST) -v pkg/render/*
-	$(GOTEST) -v pkg/storage/*
-	$(GOTEST) -v pkg/zptserver/*
+	$(GOTEST) -v pkg/zpt/*
+	$(GOTEST) -v pkg/apiserver/*
 
 clean:
 	$(GOCLEAN)

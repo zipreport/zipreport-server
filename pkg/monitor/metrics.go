@@ -6,6 +6,8 @@ import (
 )
 
 type Metrics struct {
+	HttpServers    prometheus.Gauge
+	Browsers       prometheus.Gauge
 	SuccessOps     prometheus.Counter
 	FailedOps      prometheus.Counter
 	ConversionTime prometheus.Histogram
@@ -13,6 +15,14 @@ type Metrics struct {
 
 func NewMetrics() *Metrics {
 	return &Metrics{
+		HttpServers: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "current_http_servers",
+			Help: "Current http server count",
+		}),
+		Browsers: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "current_browsers",
+			Help: "Current browser instances count",
+		}),
 		SuccessOps: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "total_request_success",
 			Help: "Total successful conversion requests",
@@ -30,13 +40,37 @@ func NewMetrics() *Metrics {
 	}
 }
 
-func (m *Metrics) IncFailed() {
+func (m *Metrics) IncHttpServers() {
+	if m != nil {
+		m.HttpServers.Inc()
+	}
+}
+
+func (m *Metrics) DecHttpServers() {
+	if m != nil {
+		m.HttpServers.Dec()
+	}
+}
+
+func (m *Metrics) IncBrowsers() {
+	if m != nil {
+		m.Browsers.Inc()
+	}
+}
+
+func (m *Metrics) DecBrowsers() {
+	if m != nil {
+		m.Browsers.Dec()
+	}
+}
+
+func (m *Metrics) IncFailedOps() {
 	if m != nil {
 		m.FailedOps.Inc()
 	}
 }
 
-func (m *Metrics) IncSuccess() {
+func (m *Metrics) IncSuccessOps() {
 	if m != nil {
 		m.SuccessOps.Inc()
 	}
