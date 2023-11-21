@@ -26,6 +26,19 @@ const (
 
 var headSha = strings.TrimSpace(utils.ExecLine(false, "git", "rev-parse", "HEAD"))
 
+func findVersion(path string) string {
+	split := strings.Split(path, "/")
+	if len(split) == 0 {
+		return ""
+	}
+	tok := split[len(split)-1]
+	match, _ := regexp.MatchString(`^(v[0-9]+\.[0-9]+\.[0-9])+.*?$`, tok)
+	if match {
+		return tok
+	}
+	return ""
+}
+
 func main() {
 	event := os.Args[1]
 
@@ -33,20 +46,19 @@ func main() {
 
 	isMain := regexp.MustCompile(`^refs/heads/master$`).MatchString(event)
 	isDev := regexp.MustCompile(`^refs/heads/development$`).MatchString(event)
-	m := regexp.MustCompile(`^refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)$`).FindStringSubmatch(event)
-	ver := ""
-	if len(m) > 1 {
-		ver = m[1]
-	}
 
+	isDev = false
 	at := getArchType()
 
 	if isMain {
 		releaseLatest(at)
 	} else if isDev {
 		releaseDev(at)
-	} else if ver != "" {
-		releaseWithVer(ver)
+	} else {
+		version := findVersion(event)
+		if len(version) > 0 {
+			releaseWithVer(at, version)
+		}
 	}
 }
 
@@ -64,8 +76,9 @@ func releaseDev(at archType) {
 	utils.Exec("docker push", at.devTag())
 }
 
-func releaseWithVer(ver string) {
+func releaseWithVer(at archType, ver string) {
 	login()
+	build(at)
 
 	verImage := registry + ":" + ver
 	utils.Exec("docker manifest create", verImage, archAmd.tag(), archArm.tag())
