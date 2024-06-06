@@ -24,5 +24,8 @@ fi
 if [ $ZIPREPORT_LOGLEVEL ] ; then
 		OPTS="$OPTS -loglevel $ZIPREPORT_LOGLEVEL"
 fi
+if [ $ZIPREPORT_CONSOLE ] ; then
+		OPTS="$OPTS -console"
+fi
 
 exec zipreport-server $OPTS

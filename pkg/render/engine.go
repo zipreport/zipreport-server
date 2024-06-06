@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
@@ -18,6 +19,7 @@ type EngineOptions struct {
 	HttpDebug   bool
 	Concurrency int
 	BasePort    int
+	LogConsole  bool
 	Context     context.Context
 	log         zerolog.Logger
 }
@@ -35,6 +37,7 @@ func DefaultEngineOptions(ctx context.Context, l zerolog.Logger) *EngineOptions 
 		HttpDebug:   false,
 		Concurrency: DefaultConcurrency,
 		BasePort:    DefaultBasePort,
+		LogConsole:  false,
 		Context:     ctx,
 		log:         l,
 	}
@@ -48,6 +51,10 @@ func NewEngine(opts *EngineOptions, m *monitor.Metrics) *Engine {
 		m:           m,
 		log:         opts.log,
 	}
+}
+
+func (e *Engine) EnableConsoleLog() {
+	e.Opts.LogConsole = true
 }
 
 func (e *Engine) RenderJob(job *Job) *JobResult {
@@ -83,14 +90,27 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		// wait for complete event before proceeding
 		timeout := make(chan bool, 1)
 		done := make(chan struct{})
+
 		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+			if e.Opts.LogConsole {
+				// log JS console output
+				e.log.Info().Str("job", job.Id.String()).Str("src", "js console").Msg(page.MustObjectsToJSON(evt.Args).String())
+			}
+
 			if page.MustObjectToJSON(evt.Args[0]).String() == "zpt-view-ready" {
 				e.log.Debug().
 					Str("id", job.Id.String()).
 					Msg("console message received")
 				close(done)
 			}
-		})()
+		},
+			func(evt *proto.LogEntryAdded) {
+				if e.Opts.LogConsole && evt.Entry != nil {
+					// log browser log output
+					msg, _ := json.Marshal(evt.Entry)
+					e.log.Info().Str("job", job.Id.String()).Str("src", "log").Msg(string(msg))
+				}
+			})()
 
 		// JS timeout procedure
 		cancel := time.AfterFunc(time.Duration(job.JsTimeoutS)*time.Second, func() {
