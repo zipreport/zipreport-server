@@ -82,8 +82,8 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		MustPage()
 	defer page.MustClose()
 
-	// EachEvent allows us to achieve the same functionality as above.
 	if job.UseJSEvent {
+		// render using jsEvent
 		e.log.Debug().
 			Str("id", job.Id.String()).
 			Msg("using JS trigger - console message")
@@ -134,6 +134,21 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		e.log.Debug().
 			Str("id", job.Id.String()).
 			Msg("using regular rendering")
+
+		if e.Opts.LogConsole {
+			// log console & browser log
+
+			go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+				e.log.Info().Str("job", job.Id.String()).Str("src", "js console").Msg(page.MustObjectsToJSON(evt.Args).String())
+			},
+				func(evt *proto.LogEntryAdded) {
+					if evt.Entry != nil {
+						msg, _ := json.Marshal(evt.Entry)
+						e.log.Info().Str("job", job.Id.String()).Str("src", "log").Msg(string(msg))
+					}
+				})()
+		}
+
 		// no JS event, proceed as expected
 		page.MustNavigate(url).MustWaitLoad()
 		// settling time
