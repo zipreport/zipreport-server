@@ -14,7 +14,7 @@ import (
 	"zipreport-server/pkg/render"
 )
 
-const VERSION = "2.1.0"
+const VERSION = "2.1.1"
 
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] argument ...\n\n", os.Args[0])
