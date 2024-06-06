@@ -22,7 +22,8 @@ launches an internal http server to serve the ZPT content, and then instructs a 
 url and render to PDF.
 
 The settling time for the internal HTML/JS rendering process can either be a default value in milisseconds (the default
-behaviour), or triggered by writing 'zpt-view-ready' to the JS console. By using the console approach, the PDF generation
+behaviour), or triggered by writing 'zpt-view-ready' to the JS console. By using the console approach, the PDF
+generation
 is triggered only after all dynamic canvas elements were generated.
 
 ### Command line options
@@ -41,7 +42,8 @@ is triggered only after all dynamic canvas elements were generated.
 | -version            | No        | Show current zipreport-server version                          |
 | -concurrency        | No        | Maximum browser instance count (default 8)                     |
 | -baseport           | No        | Base port to be used for internal HTTP servers (default 42000) |
-| -loglevel           | No        | Log level (default 2/WARN)                                     |
+| -loglevel           | No        | Log level (default 1/INFO)                                     |
+| -console            | No        | Enable logging of browser console                              |
 
 ### Available endpoints
 
@@ -114,7 +116,6 @@ the designated key. Clients should pass the key in the "X-Auth-Key" header.
 
 ### Running with Docker
 
-
 **Available Environment Variables**
 
 | name                      | Description                                                                |
@@ -124,11 +125,13 @@ the designated key. Clients should pass the key in the "X-Auth-Key" header.
 | ZIPREPORT_BASE_PORT       | Internal base HTTP port to use for browser content serving (default 42000) |
 | ZIPREPORT_SSL_CERTIFICATE | Optional SSL certificate, to be used instead of the self-signed one        |
 | ZIPREPORT_SSL_KEY         | Optional SSL certificate key, to be used instead of the self-signed one    |
-|ZIPREPORT_CONCURRENCY| Number of simultaneus browser instances to use (default 8)                 |
-|ZIPREPORT_DEBUG| Enable API debug mode|
-|ZIPREPORT_LOGLEVEL| Set zipreport-server log level|
+| ZIPREPORT_CONCURRENCY     | Number of simultaneus browser instances to use (default 8)                 |
+| ZIPREPORT_DEBUG           | Enable API debug mode                                                      |
+| ZIPREPORT_LOGLEVEL        | Set zipreport-server log level                                             |
+| ZIPREPORT_CONSOLE         | Enable logging browser console output, if loglevel allows info()           |
 
 **Build locally**
+
 ```shell
 $ docker build . --tag zipreport-server:latest
 $ docker run -p 6543:6543 zipreport-server \
@@ -137,13 +140,13 @@ $ docker run -p 6543:6543 zipreport-server \
 ```
 
 **Use prebuilt image**
+
 ```shell
 $ docker pull ghcr.io/zipreport/zipreport-server:latest
 $ docker run -p 6543:6543 ghcr.io/zipreport/zipreport-server:latest \
     -e ZIPREPORT_API_KEY="my-api-mey" \
     -e ZIPREPORT_DEBUG="true"
 ```
-
 
 ### Build
 

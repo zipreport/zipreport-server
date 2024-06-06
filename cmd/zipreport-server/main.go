@@ -14,7 +14,7 @@ import (
 	"zipreport-server/pkg/render"
 )
 
-const VERSION = "2.0.0"
+const VERSION = "2.1.0"
 
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] argument ...\n\n", os.Args[0])
@@ -34,6 +34,7 @@ func buildServer(ctx context.Context) (*apiserver.ApiServer, *render.Engine, err
 	readTimeout := flag.Int("httprt", apiserver.DefaultReadTimeout, "HTTP read timeout")
 	writeTimeout := flag.Int("httpwt", apiserver.DefaultWriteTimeout, "HTTP write timeout")
 	debug := flag.Bool("debug", false, "Enable webserver verbose output")
+	console := flag.Bool("console", false, "Enable JS console logging, if loglevel allows")
 	noMetrics := flag.Bool("nometrics", false, "Disable Prometheus endpoint")
 	concurrency := flag.Int("concurrency", render.DefaultConcurrency, "Concurrent browser instances")
 	basePort := flag.Int("baseport", render.DefaultBasePort, "Internal HTTP server base port")
@@ -70,6 +71,11 @@ func buildServer(ctx context.Context) (*apiserver.ApiServer, *render.Engine, err
 	opts.HttpDebug = *debug
 
 	engine := render.NewEngine(opts, metrics)
+
+	// Enable console logging
+	if *console {
+		engine.EnableConsoleLog()
+	}
 
 	// Api server configuration
 	apiCfg := apiserver.DefaultApiOptions(ctx, logger)
