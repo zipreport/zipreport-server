@@ -143,9 +143,9 @@ $ docker run -e ZIPREPORT_API_KEY="my-api-key" \
 
 ```shell
 $ docker pull ghcr.io/zipreport/zipreport-server:2.1.2
-$ docker run -p 6543:6543 ghcr.io/zipreport/zipreport-server:2.1.2 \
-    -e ZIPREPORT_API_KEY="my-api-key" \
-    -e ZIPREPORT_DEBUG="true"
+$ docker run -e ZIPREPORT_API_KEY="my-api-key" \
+    -e ZIPREPORT_DEBUG="true" \
+    -p 6543:6543 ghcr.io/zipreport/zipreport-server:2.1.2
 ```
 
 ### Build
