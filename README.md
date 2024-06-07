@@ -133,18 +133,18 @@ the designated key. Clients should pass the key in the "X-Auth-Key" header.
 **Build locally**
 
 ```shell
-$ docker build . --tag zipreport-server:latest
-$ docker run -p 6543:6543 zipreport-server \
-    -e ZIPREPORT_API_KEY="my-api-mey" \
-    -e ZIPREPORT_DEBUG="true"
+$ docker build . --tag zipreport-server:2.1.2
+$ docker run -e ZIPREPORT_API_KEY="my-api-key" \
+    -e ZIPREPORT_DEBUG="true" \
+    -p 6543:6543 zipreport-server
 ```
 
 **Use prebuilt image**
 
 ```shell
-$ docker pull ghcr.io/zipreport/zipreport-server:latest
-$ docker run -p 6543:6543 ghcr.io/zipreport/zipreport-server:latest \
-    -e ZIPREPORT_API_KEY="my-api-mey" \
+$ docker pull ghcr.io/zipreport/zipreport-server:2.1.2
+$ docker run -p 6543:6543 ghcr.io/zipreport/zipreport-server:2.1.2 \
+    -e ZIPREPORT_API_KEY="my-api-key" \
     -e ZIPREPORT_DEBUG="true"
 ```
 

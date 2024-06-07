@@ -14,7 +14,7 @@ import (
 	"zipreport-server/pkg/render"
 )
 
-const VERSION = "2.1.1"
+const VERSION = "2.1.2"
 
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] argument ...\n\n", os.Args[0])
@@ -64,6 +64,8 @@ func buildServer(ctx context.Context) (*apiserver.ApiServer, *render.Engine, err
 
 	zerolog.SetGlobalLevel(zerolog.Level(*loglevel))
 	logger := zerolog.New(os.Stdout).With().Logger()
+	logger.Info().Str("version", VERSION).Msg(fmt.Sprintf("start zipreport-server version %s", VERSION))
+
 	opts := render.DefaultEngineOptions(ctx, logger)
 	metrics := monitor.NewMetrics()
 	opts.Concurrency = *concurrency

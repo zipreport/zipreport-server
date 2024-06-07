@@ -3,28 +3,25 @@ set -Eeo pipefail
 
 OPTS="-addr 0.0.0.0 -certificate /etc/ssl/server.crt -certkey /etc/ssl/server.key"
 
-if [ $ZIPREPORT_API_PORT ] ; then
+if [ -n "$ZIPREPORT_API_PORT" ]; then
 		OPTS="$OPTS -port $ZIPREPORT_API_PORT"
 fi
-if [ $ZIPREPORT_API_KEY ] ; then
+if [ -n "$ZIPREPORT_API_KEY" ]; then
 		OPTS="$OPTS -apikey $ZIPREPORT_API_KEY"
 fi
-if [ $ZIPREPORT_BASE_PORT ] ; then
+if [ -n "$ZIPREPORT_BASE_PORT" ]; then
 		OPTS="$OPTS -baseport $ZIPREPORT_BASE_PORT"
 fi
-if [ $ZIPREPORT_SSL_CERTIFICATE ] ; then
-		OPTS="$OPTS -certificate $ZIPREPORT_SSL_CERTIFICATE -certkey $ZIPREPORT_SSL_KEY"
-fi
-if [ $ZIPREPORT_CONCURRENCY ] ; then
+if [ -n "$ZIPREPORT_CONCURRENCY" ]; then
 		OPTS="$OPTS -concurrency $ZIPREPORT_CONCURRENCY"
 fi
-if [ $ZIPREPORT_DEBUG ] ; then
-		OPTS="$OPTS -debug $ZIPREPORT_DEBUG"
+if [ "$ZIPREPORT_DEBUG" == "true" ]; then
+		OPTS="$OPTS -debug"
 fi
-if [ $ZIPREPORT_LOGLEVEL ] ; then
+if [ -n "$ZIPREPORT_LOGLEVEL" ]; then
 		OPTS="$OPTS -loglevel $ZIPREPORT_LOGLEVEL"
 fi
-if [ $ZIPREPORT_CONSOLE ] ; then
+if [ "$ZIPREPORT_CONSOLE" == "true" ]; then
 		OPTS="$OPTS -console"
 fi
 
