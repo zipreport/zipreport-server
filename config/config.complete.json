@@ -1,0 +1,70 @@
+{
+  "apiServer": {
+    "host": "",
+    "port": 6543,
+    "readTimeout": 600,
+    "writeTimeout": 600,
+    "debug": false,
+    "options": {
+      "authTokenSecret": "my-super-secret-token",
+      "defaultSecurityHeaders": "1"
+    },
+    "trustedProxies": [],
+    "tlsCert": "",
+    "tlsKey": "",
+    "tlsKeyPassword": "",
+    "tlsKeyPasswordEnvVar": "",
+    "tlsKeyPasswordFile": "",
+    "tlsAllowedCACerts": null,
+    "tlsCipherSuites": null,
+    "tlsMinVersion": "",
+    "tlsMaxVersion": "",
+    "tlsAllowedDNSNames": null,
+    "tlsEnable": false
+  },
+  "prometheus": {
+    "host": "localhost",
+    "port": 2220,
+    "endpoint": "/metrics",
+    "tlsCert": "",
+    "tlsKey": "",
+    "tlsKeyPassword": "",
+    "tlsKeyPasswordEnvVar": "",
+    "tlsKeyPasswordFile": "",
+    "tlsAllowedCACerts": null,
+    "tlsCipherSuites": null,
+    "tlsMinVersion": "",
+    "tlsMaxVersion": "",
+    "tlsAllowedDNSNames": null,
+    "tlsEnable": false
+  },
+  "zipReport": {
+    "readTimeoutSeconds": 300,
+    "writeTimeoutSeconds": 300,
+    "enableConsoleLogging": false,
+    "enableHttpDebugging": false,
+    "enableMetrics": false,
+    "concurrency": 8,
+    "baseHttpPort": 42000
+  },
+  "log": {
+    "level": "info",
+    "format": "pretty",
+    "includeTimestamp": true,
+    "includeCaller": false,
+    "includeHostname": true,
+    "callerSkipFrames": 2,
+    "timeFormat": "2006-01-02T15:04:05.999999999Z07:00",
+    "noColor": false,
+    "outputToFile": false,
+    "filePath": "application.log",
+    "fileAppend": true,
+    "filePermissions": 420,
+    "fileFormat": "json",
+    "fileRotation": false,
+    "maxSizeMb": 100,
+    "maxBackups": 5,
+    "maxAgeDays": 30,
+    "compress": true
+  }
+}

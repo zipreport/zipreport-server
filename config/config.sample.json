@@ -1,0 +1,32 @@
+{
+  "apiServer": {
+    "host": "",
+    "port": 6543,
+    "readTimeout": 600,
+    "writeTimeout": 600,
+    "debug": false,
+    "options": {
+      "authTokenSecret": "my-super-secret-token",
+      "defaultSecurityHeaders": "1"
+    },
+    "trustedProxies": [],
+    "tlsCert": "config/ssl/server.crt",
+    "tlsKey": "config/ssl/server.key",
+    "tlsEnable": true
+  },
+  "prometheus": {
+    "host": "localhost",
+    "port": 2220,
+    "endpoint": "/metrics",
+    "tlsEnable": false
+  },
+  "zipReport": {
+    "readTimeoutSeconds": 300,
+    "writeTimeoutSeconds": 300,
+    "enableConsoleLogging": false,
+    "enableHttpDebugging": false,
+    "enableMetrics": false,
+    "concurrency": 8,
+    "baseHttpPort": 42000
+  }
+}

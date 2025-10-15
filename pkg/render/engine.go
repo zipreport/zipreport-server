@@ -3,76 +3,80 @@ package render
 import (
 	"context"
 	"encoding/json"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
-	"github.com/rs/zerolog"
+	"errors"
+	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
+	"github.com/oddbit-project/blueprint/log"
 )
 
 const DefaultConcurrency = 8
 const DefaultBasePort = 42000
 
-type EngineOptions struct {
-	HttpDebug   bool
-	Concurrency int
-	BasePort    int
-	LogConsole  bool
-	Context     context.Context
-	log         zerolog.Logger
-}
-
 type Engine struct {
-	Opts        *EngineOptions
-	ServerPool  *zpt.ServerPool
-	BrowserPool rod.BrowserPool
-	m           *monitor.Metrics
-	log         zerolog.Logger
+	ServerPool     *zpt.ServerPool
+	BrowserPool    rod.Pool[rod.Browser]
+	metrics        *monitor.Metrics
+	logger         *log.Logger
+	httpDebug      bool
+	consoleLogging bool
 }
 
-func DefaultEngineOptions(ctx context.Context, l zerolog.Logger) *EngineOptions {
-	return &EngineOptions{
-		HttpDebug:   false,
-		Concurrency: DefaultConcurrency,
-		BasePort:    DefaultBasePort,
-		LogConsole:  false,
-		Context:     ctx,
-		log:         l,
+func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
+	if logger == nil {
+		logger = log.New("zipreport-engine")
 	}
-}
-
-func NewEngine(opts *EngineOptions, m *monitor.Metrics) *Engine {
 	return &Engine{
-		Opts:        opts,
-		ServerPool:  zpt.NewServerPoolWithContext(opts.Context, opts.Concurrency, opts.BasePort, opts.log, m),
-		BrowserPool: rod.NewBrowserPool(opts.Concurrency),
-		m:           m,
-		log:         opts.log,
+		ServerPool:  zpt.NewServerPoolWithContext(ctx, concurrency, basePort, m, logger),
+		BrowserPool: rod.NewBrowserPool(concurrency),
+		metrics:     m,
+		logger:      logger,
 	}
 }
 
 func (e *Engine) EnableConsoleLog() {
-	e.Opts.LogConsole = true
+	e.consoleLogging = true
 }
 
-func (e *Engine) RenderJob(job *Job) *JobResult {
-	e.log.Debug().
-		Str("id", job.Id.String()).
-		Any("Job", job).
-		Msg("starting job")
-	server := e.ServerPool.BuildServer(job.Zpt, e.Opts.HttpDebug)
-	e.log.Info().
-		Str("id", job.Id.String()).
-		Str("address", server.Server.Addr).
-		Msg("server address")
-	browser := e.GetBrowser()
+func (e *Engine) EnableHttpDebugging() {
+	e.httpDebug = true
+}
+
+func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
+	jobId := job.Id.String()
+	e.logger.Debug("starting job...", log.KV{"id": jobId, "job": job})
+	server := e.ServerPool.BuildServer(job.Zpt)
+	if server == nil {
+		err := errors.New("failed to build server")
+		e.logger.Error(err, "failed to build server")
+		return &JobResult{
+			ElapsedTime: 0,
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
+	e.logger.Info("started ephemeral http server", log.KV{"id": jobId, "address": server.Server.Addr})
+
+	browser, err := e.GetBrowser(ctx)
+	if err != nil {
+		e.logger.Error(err, "could not fetch browser instance", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: 0,
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
 	defer e.BrowserPool.Put(browser)
 	defer e.ServerPool.RemoveServer(server)
-	e.log.Info().
-		Str("id", job.Id.String()).
-		Msg("Browser acquired")
+	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
 	start := time.Now()
 	browser.MustIgnoreCertErrors(job.IgnoreSSLErrors)
@@ -84,31 +88,31 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 	if job.UseJSEvent {
 		// render using jsEvent
-		e.log.Debug().
-			Str("id", job.Id.String()).
-			Msg("using JS trigger - console message")
+		e.logger.Debug("using JS trigger - console message", log.KV{"id": jobId})
+
 		// wait for complete event before proceeding
 		timeout := make(chan bool, 1)
 		done := make(chan struct{})
+		closed := atomic.Int32{}
 
 		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-			if e.Opts.LogConsole {
-				// log JS console output
-				e.log.Info().Str("job", job.Id.String()).Str("src", "js console").Msg(page.MustObjectsToJSON(evt.Args).String())
+			if e.consoleLogging {
+				// logger JS console output
+				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
 			}
 
 			if page.MustObjectToJSON(evt.Args[0]).String() == "zpt-view-ready" {
-				e.log.Debug().
-					Str("id", job.Id.String()).
-					Msg("console message received")
-				close(done)
+				e.logger.Debug("console message received", log.KV{"id": jobId})
+				if closed.CompareAndSwap(0, 1) {
+					close(done)
+				}
 			}
 		},
 			func(evt *proto.LogEntryAdded) {
-				if e.Opts.LogConsole && evt.Entry != nil {
-					// log browser log output
+				if e.consoleLogging && evt.Entry != nil {
+					// logger browser logger output
 					msg, _ := json.Marshal(evt.Entry)
-					e.log.Info().Str("job", job.Id.String()).Str("src", "log").Msg(string(msg))
+					e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
 				}
 			})()
 
@@ -125,26 +129,24 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			cancel.Stop()
 			break
 		case <-timeout:
-			e.log.Warn().
-				Str("id", job.Id.String()).
-				Msg("waiting for console message timed out")
-			close(done)
+			e.logger.Warn("waiting for console message timed out", log.KV{"id": jobId})
+			if closed.CompareAndSwap(0, 1) {
+				close(done)
+			}
 		}
 	} else {
-		e.log.Debug().
-			Str("id", job.Id.String()).
-			Msg("using regular rendering")
+		e.logger.Debug("using regular rendering", log.KV{"id": jobId})
 
-		if e.Opts.LogConsole {
-			// log console & browser log
+		if e.consoleLogging {
+			// logger console & browser logger
 
 			go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				e.log.Info().Str("job", job.Id.String()).Str("src", "js console").Msg(page.MustObjectsToJSON(evt.Args).String())
+				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
 			},
 				func(evt *proto.LogEntryAdded) {
 					if evt.Entry != nil {
 						msg, _ := json.Marshal(evt.Entry)
-						e.log.Info().Str("job", job.Id.String()).Str("src", "log").Msg(string(msg))
+						e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
 					}
 				})()
 		}
@@ -168,30 +170,26 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}
 
 	if err == nil {
-		e.log.Info().
-			Str("id", job.Id.String()).
-			Int("size", len(result.Output)).
-			Float64("elapsedTime", result.ElapsedTime).
-			Msgf("finished job in %f seconds", result.ElapsedTime)
+		e.logger.Info(fmt.Sprintf("finished job in %f seconds", result.ElapsedTime), log.KV{"id": jobId, "size": len(result.Output), "elapsedTime": result.ElapsedTime})
 	} else {
-		e.log.Info().
-			Str("id", job.Id.String()).
-			Float64("elapsedTime", result.ElapsedTime).
-			Err(err).
-			Msg("job failed")
-
+		e.logger.Info("job failed", log.KV{"id": jobId, "elapsedTime": result.ElapsedTime})
 	}
 	return result
 }
 
-func (e *Engine) GetBrowser() *rod.Browser {
-	return e.BrowserPool.Get(func() *rod.Browser {
-		return rod.New().Context(e.Opts.Context).MustConnect()
+func (e *Engine) GetBrowser(ctx context.Context) (*rod.Browser, error) {
+	return e.BrowserPool.Get(func() (*rod.Browser, error) {
+		browser := rod.New().Context(ctx)
+		err := browser.Connect()
+		if err != nil {
+			return nil, err
+		}
+		return browser, nil
 	})
 }
 
 func (e *Engine) Shutdown() {
-	e.log.Info().Msg("Shutting down render.Engine...")
+	e.logger.Info("Shutting down render.Engine...")
 	e.BrowserPool.Cleanup(func(p *rod.Browser) {
 		// shutdown browsers
 		p.MustClose()

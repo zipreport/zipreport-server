@@ -4,6 +4,7 @@ GOBUILD=$(GOCMD) build
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
+GOFMT=$(GOCMD) fmt
 
 all: build
 
@@ -19,6 +20,9 @@ test:
 clean:
 	$(GOCLEAN)
 	rm bin/*
+
+fmt:
+	$(GOFMT) ./...
 
 certificate:
 	openssl req -x509 -nodes -newkey rsa:4096 -keyout cert/server.key -out cert/server.crt -days 3650 \

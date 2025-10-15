@@ -1,9 +1,10 @@
 package render
 
 import (
+	"zipreport-server/pkg/zpt"
+
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
-	"zipreport-server/pkg/zpt"
 )
 
 // Page Sizes
