@@ -77,6 +77,7 @@ func apiServerConfig() *httpserver.ServerConfig {
 	result.Options[httpserver.OptDefaultSecurityHeaders] = "1"
 
 	// token-based authentication
+	result.Options[httpserver.OptAuthTokenHeader] = "X-Auth-Key"
 	result.Options[httpserver.OptAuthTokenSecret] = "my-super-secret-token"
 	return result
 }

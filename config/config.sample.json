@@ -10,9 +10,7 @@
       "defaultSecurityHeaders": "1"
     },
     "trustedProxies": [],
-    "tlsCert": "config/ssl/server.crt",
-    "tlsKey": "config/ssl/server.key",
-    "tlsEnable": true
+    "tlsEnable": false
   },
   "prometheus": {
     "host": "localhost",

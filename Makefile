@@ -6,6 +6,8 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOFMT=$(GOCMD) fmt
 
+.PHONY: all build test test-integration test-short clean fmt certificate
+
 all: build
 
 build:
@@ -13,9 +15,13 @@ build:
 	$(GOBUILD) -o bin/browser-update cmd/browser-update/main.go
 
 test:
-	$(GOTEST) -v pkg/render/*
-	$(GOTEST) -v pkg/zpt/*
-	$(GOTEST) -v pkg/apiserver/*
+	$(GOTEST) -v ./test/...
+
+test-integration:
+	$(GOTEST) -v -timeout=5m ./test/...
+
+test-short:
+	$(GOTEST) -v -short ./test/...
 
 clean:
 	$(GOCLEAN)

@@ -8,12 +8,11 @@ COPY . /app
 WORKDIR /app
 RUN go env -w GOPROXY=$goproxy
 RUN go mod download
-RUN go build ./cmd/zipreport-server
-RUN go run ./cmd/browser-update
+RUN go build -o zipreport-server ./cmd/zipreport-server/main.go
+RUN go build -o browser-update ./cmd/browser-update/main.go
+RUN ./browser-update
+RUN mkdir -p /app/config/ssl
 
-# generate default self-signed cert
-RUN openssl req -x509 -nodes -newkey rsa:4096 -keyout /etc/ssl/server.key -out /etc/ssl/server.crt -days 3650 \
-    	      -subj "/C=PT/ST=Lisbon/L=Lisbon/O=ZipReport/OU=RD/CN=zipreport-server.local"
 
 FROM ubuntu:jammy
 
@@ -22,12 +21,15 @@ RUN ln -s /root/.cache/rod/browser/$(ls /root/.cache/rod/browser)/chrome /usr/bi
 
 RUN touch /.dockerenv
 
-COPY --from=go /app/zipreport-server /usr/bin/
-COPY --from=go /app/docker-entrypoint.sh /usr/bin/
-COPY --from=go /etc/ssl/server.crt /etc/ssl/
-COPY --from=go /etc/ssl/server.key /etc/ssl/
+RUN mkdir -p /app/config/ssl
+WORKDIR /app
 
-RUN chmod +x /usr/bin/docker-entrypoint.sh
+COPY --from=go /app/zipreport-server /app/
+COPY --from=go /app/browser-update /app/
+COPY --from=go /app/docker-entrypoint.sh /app/
+COPY --from=go /app/config/config.sample.json /app/config/config.json
+
+RUN chmod +x /app/docker-entrypoint.sh /app/zipreport-server /app/browser-update
 ARG apt_sources="http://archive.ubuntu.com"
 
 RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list && \
@@ -56,4 +58,4 @@ RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list &&
 STOPSIGNAL SIGINT
 EXPOSE 6543/tcp
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

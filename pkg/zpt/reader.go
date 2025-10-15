@@ -3,6 +3,7 @@ package zpt
 import (
 	"archive/zip"
 	"io"
+	"os"
 )
 
 type ZptReader struct {
@@ -34,4 +35,18 @@ func (z *ZptReader) ReadFile(name string) ([]byte, error) {
 
 func (z *ZptReader) Destroy() {
 	z.Reader = nil
+}
+
+// NewZptReaderFromFile creates a ZptReader from a file path (helper for tests)
+func NewZptReaderFromFile(path string) (*ZptReader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return NewZptReader(f, stat.Size())
 }
