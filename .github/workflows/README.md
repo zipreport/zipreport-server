@@ -18,6 +18,9 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
    - Runs `go vet` for static analysis
    - Builds the project with `make build`
    - Runs tests with `make test-short` (10 minute timeout)
+   - Generates Software Bill of Materials (SBOM) in CycloneDX format
+   - Generates Software Bill of Materials (SBOM) in SPDX format
+   - Uploads SBOM files as artifacts (retained for 90 days)
 
 2. **build-docker** - Builds Docker image (requires test to pass)
    - Sets up Docker Buildx
@@ -39,6 +42,10 @@ Builds and publishes Docker images to GitHub Container Registry (ghcr.io).
    - Pushes to `ghcr.io/<owner>/<repo>`
    - Uses GitHub Actions cache for layer caching
    - Generates semantic version tags
+   - Generates and attaches SBOM and provenance attestations to images
+   - Generates standalone SBOM files in CycloneDX and SPDX formats
+   - Uploads SBOM files as artifacts (retained for 90 days)
+   - Attaches SBOM files to GitHub releases automatically
 
 **Image Tags:**
 
@@ -83,6 +90,56 @@ docker build -t zipreport-server:local .
 
 # Run container
 docker run -p 6543:6543 -v $(pwd)/config:/app/config zipreport-server:local
+```
+
+## Software Bill of Materials (SBOM)
+
+Both workflows generate comprehensive Software Bill of Materials (SBOM) files to provide transparency about dependencies and components.
+
+### SBOM Formats
+
+1. **CycloneDX** (`bom-cyclonedx.json`)
+   - Industry-standard SBOM format
+   - Includes license information
+   - Generated using `CycloneDX/gh-gomod-generate-sbom`
+   - Compatible with dependency-track and other SBOM tools
+
+2. **SPDX** (`bom-spdx.json`)
+   - ISO/IEC 5962:2021 standard format
+   - Generated using Anchore Syft
+   - Widely adopted across industries
+   - Compatible with government compliance requirements
+
+### Accessing SBOMs
+
+**From CI Workflow:**
+- Navigate to the workflow run in the Actions tab
+- Download the `sbom-files` artifact
+- Contains both CycloneDX and SPDX formats
+
+**From Docker Workflow:**
+- Download the `sbom-docker-<commit-sha>` artifact from the workflow run
+- For releases: SBOM files are automatically attached to the GitHub release
+
+**From Docker Images:**
+- Docker images include embedded SBOM and provenance attestations
+- Inspect with: `docker buildx imagetools inspect ghcr.io/<owner>/<repo>:tag --format "{{ json .SBOM }}"`
+- Verify provenance with: `docker buildx imagetools inspect ghcr.io/<owner>/<repo>:tag --format "{{ json .Provenance }}"`
+
+### Using SBOMs
+
+```bash
+# Analyze with dependency-track (CycloneDX)
+curl -X POST "https://dependency-track.example.com/api/v1/bom" \
+  -H "X-Api-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @bom-cyclonedx.json
+
+# Analyze with Grype (SPDX)
+grype sbom:./bom-spdx.json
+
+# Convert between formats
+cyclonedx-cli convert --input-file bom-cyclonedx.json --output-format spdxjson
 ```
 
 ## Environment Variables

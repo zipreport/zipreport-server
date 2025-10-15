@@ -46,6 +46,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
+        id: docker_build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -55,3 +56,35 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: true
+
+      - name: Generate SBOM (CycloneDX)
+        uses: CycloneDX/gh-gomod-generate-sbom@v2
+        with:
+          version: v1
+          args: mod -licenses -json -output bom-cyclonedx.json
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: bom-spdx.json
+          image: ${{ steps.docker_build.outputs.imageid }}
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-docker-${{ github.sha }}
+          path: |
+            bom-cyclonedx.json
+            bom-spdx.json
+          retention-days: 90
+
+      - name: Attach SBOM to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bom-cyclonedx.json
+            bom-spdx.json

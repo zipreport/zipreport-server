@@ -1,0 +1,53 @@
+# Build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary and coverage
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# CI/CD
+.github/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Development files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test fixtures (included separately if needed)
+test/
+
+# Sample files
+cmd/sample/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

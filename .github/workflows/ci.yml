@@ -58,6 +58,27 @@ jobs:
         run: make test-short
         timeout-minutes: 10
 
+      - name: Generate SBOM (CycloneDX)
+        uses: CycloneDX/gh-gomod-generate-sbom@v2
+        with:
+          version: v1
+          args: mod -licenses -json -output bom-cyclonedx.json
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: bom-spdx.json
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-files
+          path: |
+            bom-cyclonedx.json
+            bom-spdx.json
+          retention-days: 90
+
   build-docker:
     runs-on: ubuntu-24.04
     needs: test
