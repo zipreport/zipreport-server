@@ -240,12 +240,12 @@ func TestRenderEndpoint_NegativeMargins(t *testing.T) {
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
-		"script":       "test.html",
-		"page_size":    "A4",
-		"margins":      "custom",
-		"margin_left":  "-1.0",
-		"margin_right": "1.0",
-		"margin_top":   "1.0",
+		"script":        "test.html",
+		"page_size":     "A4",
+		"margins":       "custom",
+		"margin_left":   "-1.0",
+		"margin_right":  "1.0",
+		"margin_top":    "1.0",
 		"margin_bottom": "1.0",
 	})
 	req.Header.Set("X-Auth-Key", testAuthToken)
