@@ -1,7 +1,7 @@
-FROM golang as go
+FROM golang AS go
 
 ARG goproxy="https://proxy.golang.org,direct"
-LABEL org.opencontainers.image.source https://github.com/zipreport/zipreport-server
+LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 
 
 COPY . /app
