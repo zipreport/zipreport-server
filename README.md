@@ -18,7 +18,7 @@ versions.
 Starting with v2.3.0, zipreport-server uses an external configuration file and no longer bundles a self-signed certificate;
 instead, mount a folder with a proper config.json (see [the sample configuration file](./config/config.sample.json)), and
 optionally modify and use [the sample script](./config/generate_certs.sh) to generate your own self-signed certificates;
-see below for a docker-composer example, and check the [migration guide](./docs/migration-guide.md).
+see below for a docker-compose example, and check the [migration guide](./docs/migration-guide.md).
 
 Also, please note that prometheus metrics are now exposed using a dedicated port, and metrics are disabled by default. Check
 the [configuration file options](./docs/configuration.md) for available configuration parameters. 
