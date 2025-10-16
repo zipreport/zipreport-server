@@ -1,5 +1,11 @@
 # zipreport-server
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/zipreport/zipreport-server)](https://go.dev/)
+[![License](https://img.shields.io/github/license/zipreport/zipreport-server)](https://github.com/zipreport/zipreport-server/blob/development/LICENSE)
+[![CI](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml)
+[![Docker](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/zipreport/zipreport-server)](https://goreportcard.com/report/github.com/zipreport/zipreport-server)
+
 ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML to PDF conversion daemon, based on
 [rod](https://github.com/go-rod/rod) and Chromium, written in Go.
 

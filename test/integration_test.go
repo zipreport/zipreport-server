@@ -26,11 +26,13 @@ const testAuthToken = "test-secret-token"
 var (
 	// Shared metrics instance to avoid duplicate registration
 	sharedMetrics = monitor.NewMetrics()
+	// Port counter to avoid conflicts between tests
+	portCounter = 42000
 )
 
 // setupTestServer creates a test API server instance
 func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 	// Configure logger
 	logConfig := log.NewDefaultConfig()
@@ -42,7 +44,10 @@ func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.
 	metrics := sharedMetrics
 
 	// Create render engine with minimal concurrency for tests
-	engine := render.NewEngine(ctx, 2, 42000, metrics, logger)
+	// Use unique port base for each test to avoid conflicts
+	portBase := portCounter
+	portCounter += 100
+	engine := render.NewEngine(ctx, 1, portBase, metrics, logger)
 
 	// Configure API server
 	cfg := httpserver.NewServerConfig()

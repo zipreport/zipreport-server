@@ -56,7 +56,7 @@ jobs:
 
       - name: Run tests
         run: make test-short
-        timeout-minutes: 10
+        timeout-minutes: 5
 
       - name: Generate SBOM (CycloneDX)
         uses: CycloneDX/gh-gomod-generate-sbom@v2
