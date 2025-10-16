@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nil pointer dereference in server pool when slots exhausted
 - Error handling in browser connection (using `Connect()` instead of `MustConnect()`)
 - Input validation for negative margin values
+- Chrome sandbox error in Docker containers (automatic `--no-sandbox` when running in Docker)
 
 ### Security
 - Added comprehensive path traversal protection with multiple validation layers

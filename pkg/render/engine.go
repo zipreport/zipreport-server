@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/oddbit-project/blueprint/log"
 )
@@ -181,36 +179,13 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 
 func (e *Engine) GetBrowser(ctx context.Context) (*rod.Browser, error) {
 	return e.BrowserPool.Get(func() (*rod.Browser, error) {
-		// Check if running in Docker (no sandbox available)
-		var browser *rod.Browser
-		if isRunningInDocker() {
-			// Launch Chrome with --no-sandbox for Docker
-			l := launcher.New().NoSandbox(true)
-			url, err := l.Launch()
-			if err != nil {
-				return nil, err
-			}
-			browser = rod.New().ControlURL(url).Context(ctx)
-		} else {
-			// Normal launch with sandbox
-			browser = rod.New().Context(ctx)
-		}
-
+		browser := rod.New().Context(ctx)
 		err := browser.Connect()
 		if err != nil {
 			return nil, err
 		}
 		return browser, nil
 	})
-}
-
-// isRunningInDocker checks if the process is running inside a Docker container
-func isRunningInDocker() bool {
-	// Check for /.dockerenv file (created in our Dockerfile)
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		return true
-	}
-	return false
 }
 
 func (e *Engine) Shutdown() {

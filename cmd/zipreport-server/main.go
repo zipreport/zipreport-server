@@ -26,6 +26,11 @@ func main() {
 	// disable -rod cli flag
 	os.Setenv("DISABLE_ROD_FLAG", "true")
 
+	// Check if running in Docker and disable Chrome sandbox
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		os.Setenv("rod_launcher", `--no-sandbox`)
+	}
+
 	// config logger
 	utils.PanicOnError(log.Configure(log.NewDefaultConfig()))
 	logger := log.New("zipreport-server")
