@@ -1,5 +1,11 @@
 # zipreport-server
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/zipreport/zipreport-server)](https://go.dev/)
+[![License](https://img.shields.io/github/license/zipreport/zipreport-server)](https://github.com/zipreport/zipreport-server/blob/development/LICENSE)
+[![CI](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml)
+[![Docker](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/zipreport/zipreport-server)](https://goreportcard.com/report/github.com/zipreport/zipreport-server)
+
 ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML to PDF conversion daemon, based on
 [rod](https://github.com/go-rod/rod) and Chromium, written in Go.
 
@@ -7,10 +13,20 @@ ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML
 previous
 versions.
 
+### Upgrading to version 2.3.0
+
+Starting with v2.3.0, zipreport-server uses an external configuration file and no longer bundles a self-signed certificate;
+instead, mount a folder with a proper config.json (see [the sample configuration file](./config/config.sample.json)), and
+optionally modify and use [the sample script](./config/generate_certs.sh) to generate your own self-signed certificates;
+see below for a docker-compose example, and check the [migration guide](./docs/migration-guide.md).
+
+Also, please note that prometheus metrics are now exposed using a dedicated port, and metrics are disabled by default. Check
+the [configuration file options](./docs/configuration.md) for available configuration parameters. 
+
 ### Security considerations
 
-zipreport-server relies on Chromium to render artifacts into PDF. As such, it allows unfetered execution of any
-external dependencies and scripts your template may use. This behaviour may pose a security risk on certain
+zipreport-server relies on Chromium to render artifacts into PDF. As such, it allows unfettered execution of any
+external dependencies and scripts your template may use. This behavior may pose a security risk on certain
 environments.
 The daemon also relies on the creation of ephemeral http servers on localhost as part of the rendering process.
 
@@ -22,28 +38,9 @@ launches an internal http server to serve the ZPT content, and then instructs a 
 url and render to PDF.
 
 The settling time for the internal HTML/JS rendering process can either be a default value in milisseconds (the default
-behaviour), or triggered by writing 'zpt-view-ready' to the JS console. By using the console approach, the PDF
+behavior), or triggered by writing 'zpt-view-ready' to the JS console. By using the console approach, the PDF
 generation
 is triggered only after all dynamic canvas elements were generated.
-
-### Command line options
-
-| Option              | Mandatory | Description                                                    |
-|---------------------|-----------|----------------------------------------------------------------|
-| -addr=\<address\>   | No        | Address to listen (default *)                                  |
-| -port=\<port\>      | No        | Port to listen (default 6543)                                  | 
-| -keyfile=\<path\>   | No        | SSL certificate key file                                       |
-| -crtfile=\<path\>   | No        | SSL certificate file                                           |
-| -apikey=\<key\>     | No        | API key for authentication (via X-Auth-Key)                    |
-| -httprt=\<seconds\> | No        | Http server read timeout, in seconds (default 300)             |
-| -httpwt=\<seconds\> | No        | Http server write timeout, in seconds (default 300)            |
-| -debug              | No        | Enable verbose output                                          |
-| -nometrics          | No        | Disable Prometheus metric endpoint                             |
-| -version            | No        | Show current zipreport-server version                          |
-| -concurrency        | No        | Maximum browser instance count (default 8)                     |
-| -baseport           | No        | Base port to be used for internal HTTP servers (default 42000) |
-| -loglevel           | No        | Log level (default 1/INFO)                                     |
-| -console            | No        | Enable logging of browser console                              |
 
 ### Available endpoints
 
@@ -97,63 +94,221 @@ Triggering example:
 </script>
 ```
 
+
+### Optional metrics endpoint (disabled by default)
+
 #### [GET] /metrics
 
 Prometheus metrics endpoint. Besides the default internal Go metrics, the following are provided:
 
-| metric                | type      | description                                                           |
-|-----------------------|-----------|-----------------------------------------------------------------------|
-| total_request_success | counter   | Number of successful API calls                                        |
-| total_request_error   | counter   | Number of failed API calls                                            |
+| metric                | type      | description                                                          |
+|-----------------------|-----------|----------------------------------------------------------------------|
+| total_requests        | counter   | Total conversion requests                                            |
+| total_request_success | counter   | Number of successful API calls                                       |
+| total_request_error   | counter   | Number of failed API calls                                           |
 | conversion_time       | histogram | Elapsed conversion time histogram, in seconds. The upper bound is 120 |
-| current_http_servers  | gauge     | Current internal HTTP server count                                    |
-| current_browsers      | gauge     | Current internal browser instance count                               |
+| current_http_servers  | gauge     | Current internal HTTP server count                                   |
+| current_browsers      | gauge     | Current internal browser instance count                              |
 
 ### Authentication
 
-If -apikey is specified, zipreport-server will perform header-based authentication with
-the designated key. Clients should pass the key in the "X-Auth-Key" header.
+zipreport-server performs header-based authentication using the token specified in your configuration file (`apiServer.options.authTokenSecret`). Clients must pass the authentication token in the `X-Auth-Key` header.
+
+Example:
+```bash
+curl -X POST http://localhost:6543/v2/render \
+  -H "X-Auth-Key: your-secret-token" \
+  -F "report=@report.zpt" \
+  -F "page_size=A4" \
+  -F "margins=standard" \
+  -F "script=index.html" \
+  -o output.pdf
+```
+
+Without authentication, requests will receive `401 Unauthorized`.
 
 ### Running with Docker
 
-**Available Environment Variables**
+Starting with version 2.3.0, zipreport-server uses a configuration file instead of environment variables. You must mount a configuration file to `/app/config/config.json` in the container.
 
-| name                      | Description                                                                |
-|---------------------------|----------------------------------------------------------------------------|
-| ZIPREPORT_API_PORT        | Port for the API to listen (default 6543)                                  |
-| ZIPREPORT_API_KEY         | API authentication key                                                     |
-| ZIPREPORT_BASE_PORT       | Internal base HTTP port to use for browser content serving (default 42000) |
-| ZIPREPORT_SSL_CERTIFICATE | Optional SSL certificate, to be used instead of the self-signed one        |
-| ZIPREPORT_SSL_KEY         | Optional SSL certificate key, to be used instead of the self-signed one    |
-| ZIPREPORT_CONCURRENCY     | Number of simultaneus browser instances to use (default 8)                 |
-| ZIPREPORT_DEBUG           | Enable API debug mode                                                      |
-| ZIPREPORT_LOGLEVEL        | Set zipreport-server log level                                             |
-| ZIPREPORT_CONSOLE         | Enable logging browser console output, if loglevel allows info()           |
-
-**Build locally**
+**Quick Start with Default Configuration**
 
 ```shell
-$ docker build . --tag zipreport-server:2.1.2
-$ docker run -e ZIPREPORT_API_KEY="my-api-key" \
-    -e ZIPREPORT_DEBUG="true" \
-    -p 6543:6543 zipreport-server
+# Build locally
+docker build . --tag zipreport-server:2.3.0
+
+# Run with sample configuration (HTTP only, no TLS)
+docker run -p 6543:6543 zipreport-server:2.3.0
 ```
 
-**Use prebuilt image**
+**Production Deployment with Custom Configuration**
+
+Create a `config.json` file (see [config.sample.json](./config/config.sample.json) or [complete reference](./docs/configuration.md)):
+
+```json
+{
+  "apiServer": {
+    "host": "",
+    "port": 6543,
+    "options": {
+      "authTokenSecret": "your-secure-random-token-here",
+      "defaultSecurityHeaders": "1"
+    },
+    "tlsEnable": false
+  },
+  "zipReport": {
+    "concurrency": 8,
+    "baseHttpPort": 42000
+  },
+  "log": {
+    "level": "info"
+  }
+}
+```
+
+Then run with your configuration:
 
 ```shell
-$ docker pull ghcr.io/zipreport/zipreport-server:2.1.2
-$ docker run -p 6543:6543 ghcr.io/zipreport/zipreport-server:2.1.2 \
-    -e ZIPREPORT_API_KEY="my-api-key" \
-    -e ZIPREPORT_DEBUG="true"
+# Mount your configuration directory
+docker run -p 6543:6543 \
+  -v $(pwd)/config:/app/config \
+  zipreport-server:2.3.0
 ```
+
+**With TLS/HTTPS**
+
+Generate certificates (or use your own):
+
+```shell
+cd config
+./generate_certs.sh
+```
+
+Update `config.json` to enable TLS:
+
+```json
+{
+  "apiServer": {
+    "tlsEnable": true,
+    "tlsCert": "config/ssl/server.crt",
+    "tlsKey": "config/ssl/server.key",
+    "options": {
+      "authTokenSecret": "your-secure-random-token-here"
+    }
+  }
+}
+```
+
+Run with TLS:
+
+```shell
+docker run -p 6543:6543 \
+  -v $(pwd)/config:/app/config \
+  zipreport-server:2.3.0
+```
+
+**Using Prebuilt Image**
+
+```shell
+# Pull latest version
+docker pull ghcr.io/zipreport/zipreport-server:latest
+
+# Or specific version
+docker pull ghcr.io/zipreport/zipreport-server:2.3.0
+
+# Run with mounted configuration
+docker run -p 6543:6543 \
+  -v $(pwd)/config:/app/config \
+  ghcr.io/zipreport/zipreport-server:2.3.0
+```
+
+**Docker Compose Example**
+
+```yaml
+version: '3.8'
+
+services:
+  zipreport:
+    image: ghcr.io/zipreport/zipreport-server:2.3.0
+    ports:
+      - "6543:6543"
+      - "2220:2220"  # Prometheus metrics (if enabled)
+    volumes:
+      - ./config:/app/config
+    restart: unless-stopped
+```
+
+**Configuration Options**
+
+See [docs/configuration.md](./docs/configuration.md) for complete configuration reference with 70+ options including:
+- API server settings (host, port, timeouts, TLS)
+- Authentication configuration
+- Prometheus metrics endpoint
+- ZipReport rendering engine settings
+- Logging configuration with rotation
+
+**Migration from 2.2.x**
+
+If upgrading from 2.2.x or earlier, see the [migration guide](./docs/migration-guide.md) for converting environment variables to the new configuration file format.
 
 ### Build
 
-To build the binary in ./bin as well as a self-signed certificate in ./cert, just run
-make:
+**Build Binaries**
 
-```shell script
-$ make all
-$ make certificate
+```shell
+# Build all binaries (zipreport-server and browser-update)
+make build
+
+# Or just build
+make
 ```
+
+Binaries will be created in `./bin/`:
+- `bin/zipreport-server` - Main server binary
+- `bin/browser-update` - Browser update utility
+
+**Generate Self-Signed Certificates**
+
+```shell
+# Generate certificates in config/ssl/
+cd config
+./generate_certs.sh
+
+# Or using make (generates in cert/ directory)
+make certificate
+```
+
+**Run Tests**
+
+```shell
+# Run all tests
+make test
+
+# Run quick tests (skip long-running tests)
+make test-short
+
+# Run with extended timeout
+make test-integration
+```
+
+**Format Code**
+
+```shell
+make fmt
+```
+
+**Run Server Locally**
+
+```shell
+# Make sure you have a configuration file
+cp config/config.sample.json config/config.json
+
+# Edit config.json with your settings
+
+# Run the server
+./bin/zipreport-server -c config/config.json
+
+# Or use default config location
+./bin/zipreport-server
+```
+

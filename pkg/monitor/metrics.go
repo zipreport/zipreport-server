@@ -6,11 +6,15 @@ import (
 )
 
 type Metrics struct {
-	HttpServers    prometheus.Gauge
-	Browsers       prometheus.Gauge
-	SuccessOps     prometheus.Counter
-	FailedOps      prometheus.Counter
-	ConversionTime prometheus.Histogram
+	ApiTotalRequests   prometheus.Counter
+	ApiSuccessRequests prometheus.Counter
+	ApiErrorRequests   prometheus.Counter
+	HttpServers        prometheus.Gauge
+	Browsers           prometheus.Gauge
+	TotalOps           prometheus.Counter
+	SuccessOps         prometheus.Counter
+	FailedOps          prometheus.Counter
+	ConversionTime     prometheus.Histogram
 }
 
 func NewMetrics() *Metrics {
@@ -22,6 +26,10 @@ func NewMetrics() *Metrics {
 		Browsers: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "current_browsers",
 			Help: "Current browser instances count",
+		}),
+		TotalOps: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "total_requests",
+			Help: "Total conversion requests",
 		}),
 		SuccessOps: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "total_request_success",
@@ -37,47 +45,5 @@ func NewMetrics() *Metrics {
 			// count should be based on render.JobProcessTimeout
 			Buckets: prometheus.LinearBuckets(1, 9, 13),
 		}),
-	}
-}
-
-func (m *Metrics) IncHttpServers() {
-	if m != nil {
-		m.HttpServers.Inc()
-	}
-}
-
-func (m *Metrics) DecHttpServers() {
-	if m != nil {
-		m.HttpServers.Dec()
-	}
-}
-
-func (m *Metrics) IncBrowsers() {
-	if m != nil {
-		m.Browsers.Inc()
-	}
-}
-
-func (m *Metrics) DecBrowsers() {
-	if m != nil {
-		m.Browsers.Dec()
-	}
-}
-
-func (m *Metrics) IncFailedOps() {
-	if m != nil {
-		m.FailedOps.Inc()
-	}
-}
-
-func (m *Metrics) IncSuccessOps() {
-	if m != nil {
-		m.SuccessOps.Inc()
-	}
-}
-
-func (m *Metrics) ObserveConversionTime(v float64) {
-	if m != nil {
-		m.ConversionTime.Observe(v)
 	}
 }

@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/rs/zerolog"
 	"mime"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/oddbit-project/blueprint/log"
 )
 
 const ReadTimeout = time.Duration(300) * time.Second
@@ -18,21 +20,18 @@ const WriteTimeout = time.Duration(300) * time.Second
 
 const DefaultScriptName = "report.html"
 
-var ErrAlreadyInitialized = errors.New("Server already initialized")
-var ErrAlreadyShutdown = errors.New("Server already shutdown")
-
 type ZptServer struct {
 	Zpt    *ZptReader
 	Server *http.Server
 	Port   int
-	log    zerolog.Logger
+	logger *log.Logger
 }
 
-func NewZptServer(reader *ZptReader, port int, l zerolog.Logger, debug bool) *ZptServer {
+func NewZptServer(reader *ZptReader, port int, logger *log.Logger) *ZptServer {
 	server := &ZptServer{
-		Zpt:  reader,
-		Port: port,
-		log:  l,
+		Zpt:    reader,
+		Port:   port,
+		logger: logger,
 		Server: &http.Server{
 			Addr:         "localhost:" + strconv.Itoa(port),
 			Handler:      nil,
@@ -50,42 +49,45 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		name = DefaultScriptName
 	} else {
 		_, i := utf8.DecodeRuneInString(req.RequestURI)
-		name = req.RequestURI[i:]
+		name = filepath.Clean(req.RequestURI[i:])
+
+		// Remove leading slashes (zip paths don't have leading /)
+		name = strings.TrimLeft(name, "/\\")
+
+		// Reject parent directory traversal attempts
+		if strings.HasPrefix(name, "..") || strings.Contains(name, "/..") || strings.Contains(name, "\\..") {
+			resp.WriteHeader(http.StatusForbidden)
+			return
+		}
 	}
+
 	buf, err := z.Zpt.ReadFile(name)
 	if err == nil {
 		resp.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name)))
 		resp.WriteHeader(http.StatusOK)
 		_, err = resp.Write(buf)
 		if err != nil {
-			z.log.Err(err).
-				Str("address", z.Server.Addr).
-				Msg("error writing http response")
+			z.logger.Error(err, "error writing http response", log.KV{"address": z.Server.Addr})
 		}
 		return
 	} else {
-		z.log.Warn().
-			Err(err).
-			Str("uri", name).
-			Msg("error serving file")
+		z.logger.Warn("error serving file", log.KV{"uri": name})
 	}
 	resp.WriteHeader(http.StatusNotFound)
 }
 
 func (z *ZptServer) Run() error {
-	z.log.Info().Msg(fmt.Sprintf("Starting server and listening on %s", z.Server.Addr))
+	z.logger.Info(fmt.Sprintf("Starting server and listening on %s", z.Server.Addr))
+
 	err := z.Server.ListenAndServe()
 	// mask out shutdown as error
-	if err != http.ErrServerClosed {
-		z.log.Warn().
-			Str("address", z.Server.Addr).
-			Err(err).
-			Msg("server exited with error")
+	if !errors.Is(err, http.ErrServerClosed) {
+		z.logger.Error(err, "server exited with error", log.KV{"address": z.Server.Addr})
 		return err
 	}
 	return nil
 }
 func (z *ZptServer) Shutdown(ctx context.Context) error {
-	z.log.Info().Str("address", z.Server.Addr).Msg("Shutting down server ")
+	z.logger.Info(fmt.Sprintf("Shutting down server"), log.KV{"address": z.Server.Addr})
 	return z.Server.Shutdown(ctx)
 }

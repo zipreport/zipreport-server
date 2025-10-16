@@ -4,6 +4,9 @@ GOBUILD=$(GOCMD) build
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
+GOFMT=$(GOCMD) fmt
+
+.PHONY: all build test test-integration test-short clean fmt certificate
 
 all: build
 
@@ -12,13 +15,20 @@ build:
 	$(GOBUILD) -o bin/browser-update cmd/browser-update/main.go
 
 test:
-	$(GOTEST) -v pkg/render/*
-	$(GOTEST) -v pkg/zpt/*
-	$(GOTEST) -v pkg/apiserver/*
+	$(GOTEST) -v -p 1 ./test/...
+
+test-integration:
+	$(GOTEST) -v -p 1 -timeout=5m ./test/...
+
+test-short:
+	$(GOTEST) -v -short -p 1 ./test/...
 
 clean:
 	$(GOCLEAN)
 	rm bin/*
+
+fmt:
+	$(GOFMT) ./...
 
 certificate:
 	openssl req -x509 -nodes -newkey rsa:4096 -keyout cert/server.key -out cert/server.crt -days 3650 \

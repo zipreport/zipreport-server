@@ -1,0 +1,82 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+zipreport-server
+browser-update
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dist/
+build/
+
+# Dependencies
+vendor/
+
+# Environment files
+.env
+.env.*
+
+# Certificates and keys
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+cert/
+config/ssl/*.key
+config/ssl/*.crt
+
+# Logs
+*.log
+application.log
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# SBOM files
+bom-cyclonedx.json
+bom-spdx.json
+*.sbom.json
+
+# Sample/test files (project-specific)
+cmd/sample/
+issues.md
+run-image.sh
+templates/
+entity.zpt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+Pipfile
+Pipfile.lock

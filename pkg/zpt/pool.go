@@ -2,9 +2,10 @@ package zpt
 
 import (
 	"context"
-	"github.com/rs/zerolog"
 	"sync"
 	"zipreport-server/pkg/monitor"
+
+	"github.com/oddbit-project/blueprint/log"
 )
 
 type ServerPool struct {
@@ -13,11 +14,11 @@ type ServerPool struct {
 	ctx      context.Context
 	pool     []*ZptServer
 	BasePort int
-	log      zerolog.Logger
 	metrics  *monitor.Metrics
+	logger   *log.Logger
 }
 
-func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, l zerolog.Logger, m *monitor.Metrics) *ServerPool {
+func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, m *monitor.Metrics, logger *log.Logger) *ServerPool {
 	serverSlots := make(chan *int, limit)
 	for i := 0; i < limit; i++ {
 		serverSlots <- nil
@@ -28,15 +29,15 @@ func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, l ze
 		pool:     make([]*ZptServer, limit),
 		BasePort: basePort,
 		metrics:  m,
-		log:      l,
+		logger:   logger,
 	}
 }
 
-func NewServerPool(limit int, basePort int, l zerolog.Logger, m *monitor.Metrics) *ServerPool {
-	return NewServerPoolWithContext(context.Background(), limit, basePort, l, m)
+func NewServerPool(limit int, basePort int, m *monitor.Metrics, logger *log.Logger) *ServerPool {
+	return NewServerPoolWithContext(context.Background(), limit, basePort, m, logger)
 }
 
-func (p *ServerPool) BuildServer(reader *ZptReader, debug bool) *ZptServer {
+func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
 	_ = <-p.slots // read slot
 	p.mx.Lock()
 	idx := -1
@@ -46,18 +47,22 @@ func (p *ServerPool) BuildServer(reader *ZptReader, debug bool) *ZptServer {
 			break
 		}
 	}
+
 	if idx == -1 {
 		// should never happen
 		p.mx.Unlock()
+		p.slots <- nil // Return the slot
+		p.logger.Error(nil, "pool inconsistency: no available slot found")
 		return nil
 	}
-	server := NewZptServer(reader, p.BasePort+idx, p.log, debug)
+
+	server := NewZptServer(reader, p.BasePort+idx, p.logger)
 	p.pool[idx] = server
 	p.mx.Unlock()
-	p.metrics.IncHttpServers()
+	p.metrics.HttpServers.Inc()
 	go func() {
 		server.Run() // blocking call
-		p.metrics.DecHttpServers()
+		p.metrics.HttpServers.Dec()
 	}()
 	return server
 }
@@ -87,7 +92,7 @@ func (p *ServerPool) Shutdown() {
 	for i, srv := range p.pool {
 		if srv != nil {
 			if srv.Shutdown(p.ctx) == nil {
-				p.metrics.DecHttpServers()
+				p.metrics.HttpServers.Dec()
 			}
 		}
 		p.pool[i] = nil
