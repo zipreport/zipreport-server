@@ -65,12 +65,12 @@ jobs:
           version: v1
           args: mod -licenses -json -output bom-cyclonedx.json
 
-      - name: Generate SBOM (SPDX)
+      - name: Generate SBOM (SPDX) from source
         uses: anchore/sbom-action@v0
         with:
           format: spdx-json
           output-file: bom-spdx.json
-          image: ${{ steps.docker_build.outputs.imageid }}
+          path: .
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v4
