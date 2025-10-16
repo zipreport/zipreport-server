@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/oddbit-project/blueprint/log"
 )
@@ -26,17 +28,28 @@ type Engine struct {
 	logger         *log.Logger
 	httpDebug      bool
 	consoleLogging bool
+	launcherURL    string // Shared launcher URL for no-sandbox mode
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
 	if logger == nil {
 		logger = log.New("zipreport-engine")
 	}
+
+	// Check if we need to create a shared launcher with --no-sandbox
+	var launcherURL string
+	if needsNoSandbox() {
+		logger.Info("Detected CI/Docker environment, launching Chrome with --no-sandbox")
+		l := launcher.New().NoSandbox(true)
+		launcherURL = l.MustLaunch()
+	}
+
 	return &Engine{
 		ServerPool:  zpt.NewServerPoolWithContext(ctx, concurrency, basePort, m, logger),
 		BrowserPool: rod.NewBrowserPool(concurrency),
 		metrics:     m,
 		logger:      logger,
+		launcherURL: launcherURL,
 	}
 }
 
@@ -179,13 +192,34 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 
 func (e *Engine) GetBrowser(ctx context.Context) (*rod.Browser, error) {
 	return e.BrowserPool.Get(func() (*rod.Browser, error) {
-		browser := rod.New().Context(ctx)
+		var browser *rod.Browser
+		if e.launcherURL != "" {
+			// Use shared launcher with --no-sandbox
+			browser = rod.New().ControlURL(e.launcherURL).Context(ctx)
+		} else {
+			// Normal launch with sandbox
+			browser = rod.New().Context(ctx)
+		}
+
 		err := browser.Connect()
 		if err != nil {
 			return nil, err
 		}
 		return browser, nil
 	})
+}
+
+// needsNoSandbox checks if Chrome sandbox should be disabled
+func needsNoSandbox() bool {
+	// Check for CI environments
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		return true
+	}
+	// Check for Docker
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return false
 }
 
 func (e *Engine) Shutdown() {

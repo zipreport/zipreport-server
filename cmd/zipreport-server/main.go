@@ -26,9 +26,12 @@ func main() {
 	// disable -rod cli flag
 	os.Setenv("DISABLE_ROD_FLAG", "true")
 
-	// Check if running in Docker and disable Chrome sandbox
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		os.Setenv("rod_launcher", `--no-sandbox`)
+	// Check if running in CI/Docker environment and disable Chrome sandbox
+	// GitHub Actions and Docker containers don't have Chrome sandbox support
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		os.Setenv("rod_launcher", "--no-sandbox")
+	} else if _, err := os.Stat("/.dockerenv"); err == nil {
+		os.Setenv("rod_launcher", "--no-sandbox")
 	}
 
 	// config logger
