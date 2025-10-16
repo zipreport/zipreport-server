@@ -25,7 +25,7 @@ the [configuration file options](./docs/configuration.md) for available configur
 
 ### Security considerations
 
-zipreport-server relies on Chromium to render artifacts into PDF. As such, it allows unlettered execution of any
+zipreport-server relies on Chromium to render artifacts into PDF. As such, it allows unfettered execution of any
 external dependencies and scripts your template may use. This behavior may pose a security risk on certain
 environments.
 The daemon also relies on the creation of ephemeral http servers on localhost as part of the rendering process.
