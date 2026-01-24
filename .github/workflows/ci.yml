@@ -22,17 +22,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.7'
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          go-version: '1.24'
 
       - name: Download dependencies
         run: go mod download
@@ -50,6 +40,16 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
       - name: Build
         run: make build
@@ -95,5 +95,7 @@ jobs:
           context: .
           push: false
           tags: zipreport-server:test
+          build-args: |
+            VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
