@@ -29,7 +29,7 @@ type Engine struct {
 	logger         *log.Logger
 	httpDebug      bool
 	consoleLogging bool
-	launcherURL    string  // Shared launcher URL for no-sandbox mode
+	launcherURL    string          // Shared launcher URL for no-sandbox mode
 	ctx            context.Context // Application-level context for pooled browsers
 }
 
@@ -145,8 +145,8 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	// WaitGroup to synchronize event goroutines with page closure
 	var evtWg sync.WaitGroup
 	defer func() {
-		pageCancel() // cancel page context, immediately unblocking event goroutines
-		evtWg.Wait() // wait for event goroutines to finish
+		pageCancel()                // cancel page context, immediately unblocking event goroutines
+		evtWg.Wait()                // wait for event goroutines to finish
 		page.Context(e.ctx).Close() // close tab using a live context
 	}()
 

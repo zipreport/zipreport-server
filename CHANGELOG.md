@@ -5,6 +5,28 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1]
+
+### Added
+- End-to-end rendering tests: JS event mode, JS timeout, multi-resource, multi-page, PDF content validation, all page sizes, landscape/portrait, custom margins
+- Error scenario tests: corrupt ZIP, missing index file, zero timeout, empty upload, no file field
+- Concurrency tests: parallel renders, exceed pool size, independent jobs with different page sizes
+- Metrics validation tests: success/failure/total counters, conversion time histogram
+- PDF validation helpers (`parsePDFPageCount`, `pdfContainsText`, `isValidPDF`) using raw byte scanning
+- New test fixtures: `js-event.zpt`, `js-event-timeout.zpt`, `multi-resource.zpt`, `multi-page.zpt`, `missing-index.zpt`, `corrupt.zpt`
+- Fixture source files alongside ZPTs for transparency
+- `test/generate_fixtures.sh` script to regenerate ZPT fixtures from source
+- `make test-fixtures` target
+- Docker E2E test job in CI workflow
+- `Dockerfile.test` for running full test suite locally without Chrome sandbox issues
+- `CLAUDE.md` for Claude Code guidance
+
+### Changed
+- CI now runs `make test-integration` (full suite) instead of `make test-short`
+- Test integration timeout increased from 5m to 10m to accommodate full suite
+- `setupTestServer` context timeout increased from 30s to 120s (fixes pre-existing timeout failures in sequential page-size subtests)
+- `github.com/prometheus/client_model` promoted from indirect to direct dependency (used by metrics tests)
+
 ## [2.3.0]
 
 ### Added
