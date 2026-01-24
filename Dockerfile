@@ -1,5 +1,7 @@
-FROM golang:1.24.12 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24.12 AS builder
 
+ARG TARGETARCH
+ARG TARGETOS=linux
 ARG goproxy="https://proxy.golang.org,direct"
 ARG VERSION="dev"
 
@@ -9,11 +11,12 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go env -w GOPROXY=$goproxy && go mod download
 
-# Build binaries with stripped debug info and injected version
+# Cross-compile binaries with stripped debug info and injected version
 COPY . .
-RUN go build -ldflags="-s -w -X main.Version=${VERSION}" -o zipreport-server ./cmd/zipreport-server/main.go && \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w -X main.Version=${VERSION}" -o zipreport-server ./cmd/zipreport-server/main.go && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
-    ./browser-update && \
     mkdir -p /app/config/ssl
 
 FROM ubuntu:jammy
@@ -34,20 +37,20 @@ RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list &&
     > /dev/null && \
     rm -rf /var/lib/apt/lists/*
 
-# Browser cache
-COPY --from=builder /root/.cache/rod /root/.cache/rod
+WORKDIR /app
+
+COPY --from=builder /app/zipreport-server /app/
+COPY --from=builder /app/browser-update /app/
+COPY --from=builder /app/config/config.sample.json /app/config/config.json
+
+# Download browser for the target platform (supports amd64 and arm64)
+RUN /app/browser-update
 RUN ln -s "/root/.cache/rod/browser/$(ls -1 /root/.cache/rod/browser | head -1)/chrome" /usr/bin/chrome
 
 # Non-root user
 RUN useradd -r -s /bin/false zipreport && \
     mkdir -p /app/config/ssl && \
     chown -R zipreport:zipreport /app /root/.cache/rod
-
-WORKDIR /app
-
-COPY --from=builder --chown=zipreport:zipreport /app/zipreport-server /app/
-COPY --from=builder --chown=zipreport:zipreport /app/browser-update /app/
-COPY --from=builder --chown=zipreport:zipreport /app/config/config.sample.json /app/config/config.json
 
 RUN touch /.dockerenv
 

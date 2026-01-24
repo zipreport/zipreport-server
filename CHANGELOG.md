@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.3.1]
 
 ### Added
+- Local Chromium download package (`pkg/browser`) with arm64 Linux support, replacing rod's built-in downloader which lacks arm64 builds
+- Multi-platform Docker image support (`linux/amd64`, `linux/arm64`) for Apple Silicon and ARM64 servers
 - End-to-end rendering tests: JS event mode, JS timeout, multi-resource, multi-page, PDF content validation, all page sizes, landscape/portrait, custom margins
 - Error scenario tests: corrupt ZIP, missing index file, zero timeout, empty upload, no file field
 - Concurrency tests: parallel renders, exceed pool size, independent jobs with different page sizes
@@ -22,11 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CLAUDE.md` for Claude Code guidance
 
 ### Changed
+- `cmd/browser-update` now uses local `pkg/browser` package instead of rod's `launcher.NewBrowser()`
+- Dockerfile restructured for cross-compilation (`--platform=$BUILDPLATFORM` builder, `CGO_ENABLED=0` cross-compile)
 - CI now runs `make test-integration` (full suite) instead of `make test-short`
 - Test integration timeout increased from 5m to 10m to accommodate full suite
 - `setupTestServer` context timeout increased from 30s to 120s (fixes pre-existing timeout failures in sequential page-size subtests)
 - `github.com/prometheus/client_model` promoted from indirect to direct dependency (used by metrics tests)
-- Docker CI job now builds multi-platform images (`linux/amd64`, `linux/arm64`) for Apple Silicon and ARM64 server compatibility
 - Updated Go toolchain to 1.24.12 (Dockerfile, Dockerfile.test, CI workflow, go.mod)
 
 ### Fixed

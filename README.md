@@ -131,6 +131,19 @@ Without authentication, requests will receive `401 Unauthorized`.
 
 Starting with version 2.3.0, zipreport-server uses a configuration file instead of environment variables. You must mount a configuration file to `/app/config/config.json` in the container.
 
+**Multi-Platform Support**
+
+Docker images are built for both `linux/amd64` and `linux/arm64`. This enables running on:
+- Intel/AMD servers and desktops (amd64)
+- Apple Silicon Macs — M1/M2/M3/M4 (arm64)
+- ARM64 cloud instances — AWS Graviton, Ampere, etc.
+
+The correct image is selected automatically by Docker based on the host architecture. Chromium is sourced from different locations depending on the platform:
+- **amd64**: Google's Chromium snapshots (same source as go-rod's default)
+- **arm64**: Playwright CDN (arm64 Chromium builds)
+
+Both variants are functionally identical and store the browser in rod's expected cache location.
+
 **Quick Start with Default Configuration**
 
 ```shell
@@ -265,7 +278,15 @@ make
 
 Binaries will be created in `./bin/`:
 - `bin/zipreport-server` - Main server binary
-- `bin/browser-update` - Browser update utility
+- `bin/browser-update` - Browser download utility (fetches Chromium for the current platform)
+
+**Updating Chromium Versions**
+
+The Chromium revision constants are defined in `pkg/browser/browser.go`:
+- `Revision` — Chromium snapshot revision for amd64 (must match rod's `RevisionDefault` so the launcher finds it in the cache)
+- `RevisionPlaywright` — Playwright CDN revision for arm64 Linux builds
+
+To update the bundled Chromium version, change these constants and rebuild. The `browser-update` command will download the new version on next run.
 
 **Generate Self-Signed Certificates**
 
