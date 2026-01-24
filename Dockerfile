@@ -1,4 +1,4 @@
-FROM golang:1.24 AS builder
+FROM golang:1.24.12 AS builder
 
 ARG goproxy="https://proxy.golang.org,direct"
 ARG VERSION="dev"
