@@ -181,7 +181,7 @@ func TestRenderEndpoint_MissingFile(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	writer.WriteField("page_size", "A4")
+	require.NoError(t, writer.WriteField("page_size", "A4"))
 	writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
