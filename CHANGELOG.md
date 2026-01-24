@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test integration timeout increased from 5m to 10m to accommodate full suite
 - `setupTestServer` context timeout increased from 30s to 120s (fixes pre-existing timeout failures in sequential page-size subtests)
 - `github.com/prometheus/client_model` promoted from indirect to direct dependency (used by metrics tests)
+- Docker CI job now builds multi-platform images (`linux/amd64`, `linux/arm64`) for Apple Silicon and ARM64 server compatibility
+- Updated Go toolchain to 1.24.12 (Dockerfile, Dockerfile.test, CI workflow, go.mod)
+
+### Fixed
+- Unchecked error returns flagged by golangci-lint in `pkg/zpt/pool.go`, test files
+- gosimple issues: `time.Now().Sub()` → `time.Since()`, unnecessary `fmt.Sprintf`, redundant channel receive assignment
+- Code formatting issues caught by `gofmt -s`
+
+### Security
+- Updated `github.com/quic-go/quic-go` v0.55.0 → v0.57.0 (GO-2025-4233)
+- Updated Go from 1.24.7 to 1.24.12 to resolve 10 stdlib vulnerabilities
 
 ## [2.3.0]
 
