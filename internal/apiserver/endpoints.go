@@ -28,7 +28,7 @@ func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
 		return
 	}
 
-	result := e.RenderJob(g.Request.Context(), job)
+	result := e.RenderJob(job)
 	if !result.Success {
 		m.FailedOps.Inc() // update metrics
 		logger.Error(result.Error, "error generating pdf", log.KV{"reqId": reqId})

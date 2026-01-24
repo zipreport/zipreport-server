@@ -28,7 +28,8 @@ type Engine struct {
 	logger         *log.Logger
 	httpDebug      bool
 	consoleLogging bool
-	launcherURL    string // Shared launcher URL for no-sandbox mode
+	launcherURL    string  // Shared launcher URL for no-sandbox mode
+	ctx            context.Context // Application-level context for pooled browsers
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -50,6 +51,7 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 		metrics:     m,
 		logger:      logger,
 		launcherURL: launcherURL,
+		ctx:         ctx,
 	}
 }
 
@@ -61,7 +63,7 @@ func (e *Engine) EnableHttpDebugging() {
 	e.httpDebug = true
 }
 
-func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
+func (e *Engine) RenderJob(job *Job) *JobResult {
 	jobId := job.Id.String()
 	e.logger.Debug("starting job...", log.KV{"id": jobId, "job": job})
 	server := e.ServerPool.BuildServer(job.Zpt)
@@ -77,7 +79,7 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 	}
 	e.logger.Info("started ephemeral http server", log.KV{"id": jobId, "address": server.Server.Addr})
 
-	browser, err := e.GetBrowser(ctx)
+	browser, err := e.GetBrowser()
 	if err != nil {
 		e.logger.Error(err, "could not fetch browser instance", log.KV{"id": jobId})
 		return &JobResult{
@@ -92,12 +94,30 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
 	start := time.Now()
-	browser.MustIgnoreCertErrors(job.IgnoreSSLErrors)
+	err = browser.IgnoreCertErrors(job.IgnoreSSLErrors)
+	if err != nil {
+		e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: 0,
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
-	page := browser.
+	page, err := browser.
 		Timeout(time.Duration(job.JobTimeoutS) * time.Second).
-		MustPage()
-	defer page.MustClose()
+		Page(proto.TargetCreateTarget{})
+	if err != nil {
+		e.logger.Error(err, "failed to create page", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: time.Since(start).Seconds(),
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
+	defer page.Close()
 
 	if job.UseJSEvent {
 		// render using jsEvent
@@ -110,14 +130,16 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 
 		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
 			if e.consoleLogging {
-				// logger JS console output
-				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
+				// log JS console output
+				e.logConsoleArgs(page, evt.Args, jobId)
 			}
 
-			if page.MustObjectToJSON(evt.Args[0]).String() == "zpt-view-ready" {
-				e.logger.Debug("console message received", log.KV{"id": jobId})
-				if closed.CompareAndSwap(0, 1) {
-					close(done)
+			if len(evt.Args) > 0 {
+				if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
+					e.logger.Debug("console message received", log.KV{"id": jobId})
+					if closed.CompareAndSwap(0, 1) {
+						close(done)
+					}
 				}
 			}
 		},
@@ -135,7 +157,26 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 		})
 
 		wait := page.WaitEvent(&proto.PageLoadEventFired{})
-		page.MustNavigate(url).MustWaitLoad()
+		err = page.Navigate(url)
+		if err != nil {
+			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
+		err = page.WaitLoad()
+		if err != nil {
+			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
 		wait()
 		select {
 		case <-done:
@@ -151,10 +192,10 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 		e.logger.Debug("using regular rendering", log.KV{"id": jobId})
 
 		if e.consoleLogging {
-			// logger console & browser logger
+			// log console & browser logger
 
 			go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
+				e.logConsoleArgs(page, evt.Args, jobId)
 			},
 				func(evt *proto.LogEntryAdded) {
 					if evt.Entry != nil {
@@ -165,7 +206,26 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 		}
 
 		// no JS event, proceed as expected
-		page.MustNavigate(url).MustWaitLoad()
+		err = page.Navigate(url)
+		if err != nil {
+			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
+		err = page.WaitLoad()
+		if err != nil {
+			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
 		// settling time
 		time.Sleep(time.Duration(job.JobSettlingTimeMs) * time.Millisecond)
 	}
@@ -190,15 +250,27 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 	return result
 }
 
-func (e *Engine) GetBrowser(ctx context.Context) (*rod.Browser, error) {
+func (e *Engine) logConsoleArgs(page *rod.Page, args []*proto.RuntimeRemoteObject, jobId string) {
+	var parts []string
+	for _, obj := range args {
+		if val, err := page.ObjectToJSON(obj); err == nil {
+			parts = append(parts, val.String())
+		}
+	}
+	if len(parts) > 0 {
+		e.logger.Info(fmt.Sprintf("%v", parts), log.KV{"id": jobId, "src": "js console"})
+	}
+}
+
+func (e *Engine) GetBrowser() (*rod.Browser, error) {
 	return e.BrowserPool.Get(func() (*rod.Browser, error) {
 		var browser *rod.Browser
 		if e.launcherURL != "" {
 			// Use shared launcher with --no-sandbox
-			browser = rod.New().ControlURL(e.launcherURL).Context(ctx)
+			browser = rod.New().ControlURL(e.launcherURL).Context(e.ctx)
 		} else {
 			// Normal launch with sandbox
-			browser = rod.New().Context(ctx)
+			browser = rod.New().Context(e.ctx)
 		}
 
 		err := browser.Connect()
