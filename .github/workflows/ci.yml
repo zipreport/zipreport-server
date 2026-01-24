@@ -120,7 +120,21 @@ jobs:
             -p 6543:6543 \
             -e ZIPREPORT_API_KEY=test-key \
             zipreport-server:e2e
-          sleep 5
+
+      - name: Wait for container to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "" http://localhost:6543/ 2>/dev/null; then
+              echo "Container ready after ${i}s"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "Container failed to start within 30s"
+              docker logs zipreport-e2e
+              exit 1
+            fi
+            sleep 1
+          done
 
       - name: E2E render test
         run: |
@@ -130,7 +144,11 @@ jobs:
             -F "report=@test/fixtures/test.zpt" \
             -F "page_size=A4" \
             -F "margins=standard")
-          [ "$HTTP_CODE" = "200" ] || (echo "Expected 200, got $HTTP_CODE"; exit 1)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Expected 200, got $HTTP_CODE"
+            docker logs zipreport-e2e
+            exit 1
+          fi
           head -c 5 response.pdf | grep -q '%PDF' || (echo "Not a valid PDF"; exit 1)
           echo "E2E Docker test passed"
 
