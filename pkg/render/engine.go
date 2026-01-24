@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/monitor"
@@ -66,6 +67,17 @@ func (e *Engine) EnableHttpDebugging() {
 func (e *Engine) RenderJob(job *Job) *JobResult {
 	jobId := job.Id.String()
 	e.logger.Debug("starting job...", log.KV{"id": jobId, "job": job})
+
+	// Validate timeouts to prevent immediately-canceled contexts
+	jobTimeout := job.JobTimeoutS
+	if jobTimeout <= 0 {
+		jobTimeout = JobDefaultTimeout
+	}
+	jsTimeout := job.JsTimeoutS
+	if jsTimeout <= 0 {
+		jsTimeout = JobDefaultJsTimeout
+	}
+
 	server := e.ServerPool.BuildServer(job.Zpt)
 	if server == nil {
 		err := errors.New("failed to build server")
@@ -77,6 +89,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
+	defer e.ServerPool.RemoveServer(server)
 	e.logger.Info("started ephemeral http server", log.KV{"id": jobId, "address": server.Server.Addr})
 
 	browser, err := e.GetBrowser()
@@ -89,8 +102,16 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
-	defer e.BrowserPool.Put(browser)
-	defer e.ServerPool.RemoveServer(server)
+	// Track whether browser is healthy; only return to pool if so
+	browserOK := false
+	defer func() {
+		if browserOK {
+			e.BrowserPool.Put(browser)
+		} else {
+			e.logger.Warn("discarding broken browser instance", log.KV{"id": jobId})
+			browser.Close()
+		}
+	}()
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
 	start := time.Now()
@@ -104,11 +125,12 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
+
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
-	page, err := browser.
-		Timeout(time.Duration(job.JobTimeoutS) * time.Second).
-		Page(proto.TargetCreateTarget{})
+	pageCtx, pageCancel := context.WithTimeout(e.ctx, time.Duration(jobTimeout)*time.Second)
+	page, err := browser.Context(pageCtx).Page(proto.TargetCreateTarget{})
 	if err != nil {
+		pageCancel()
 		e.logger.Error(err, "failed to create page", log.KV{"id": jobId})
 		return &JobResult{
 			ElapsedTime: time.Since(start).Seconds(),
@@ -117,7 +139,16 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
-	defer page.Close()
+	// Page created successfully — browser connection is alive
+	browserOK = true
+
+	// WaitGroup to synchronize event goroutines with page closure
+	var evtWg sync.WaitGroup
+	defer func() {
+		pageCancel() // cancel page context, immediately unblocking event goroutines
+		evtWg.Wait() // wait for event goroutines to finish
+		page.Context(e.ctx).Close() // close tab using a live context
+	}()
 
 	if job.UseJSEvent {
 		// render using jsEvent
@@ -128,33 +159,37 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		done := make(chan struct{})
 		closed := atomic.Int32{}
 
-		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-			if e.consoleLogging {
-				// log JS console output
-				e.logConsoleArgs(page, evt.Args, jobId)
-			}
+		evtWg.Add(1)
+		go func() {
+			defer evtWg.Done()
+			page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+				if e.consoleLogging {
+					// log JS console output
+					e.logConsoleArgs(page, evt.Args, jobId)
+				}
 
-			if len(evt.Args) > 0 {
-				if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
-					e.logger.Debug("console message received", log.KV{"id": jobId})
-					if closed.CompareAndSwap(0, 1) {
-						close(done)
+				if len(evt.Args) > 0 {
+					if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
+						e.logger.Debug("console message received", log.KV{"id": jobId})
+						if closed.CompareAndSwap(0, 1) {
+							close(done)
+						}
 					}
 				}
-			}
-		},
-			func(evt *proto.LogEntryAdded) {
-				if e.consoleLogging && evt.Entry != nil {
-					// logger browser logger output
-					msg, _ := json.Marshal(evt.Entry)
-					e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
-				}
-			})()
+			},
+				func(evt *proto.LogEntryAdded) {
+					if e.consoleLogging && evt.Entry != nil {
+						msg, _ := json.Marshal(evt.Entry)
+						e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
+					}
+				})()
+		}()
 
 		// JS timeout procedure
-		cancel := time.AfterFunc(time.Duration(job.JsTimeoutS)*time.Second, func() {
+		cancel := time.AfterFunc(time.Duration(jsTimeout)*time.Second, func() {
 			close(timeout)
 		})
+		defer cancel.Stop()
 
 		wait := page.WaitEvent(&proto.PageLoadEventFired{})
 		err = page.Navigate(url)
@@ -180,29 +215,28 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		wait()
 		select {
 		case <-done:
-			cancel.Stop()
 			break
 		case <-timeout:
 			e.logger.Warn("waiting for console message timed out", log.KV{"id": jobId})
-			if closed.CompareAndSwap(0, 1) {
-				close(done)
-			}
 		}
 	} else {
 		e.logger.Debug("using regular rendering", log.KV{"id": jobId})
 
 		if e.consoleLogging {
 			// log console & browser logger
-
-			go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				e.logConsoleArgs(page, evt.Args, jobId)
-			},
-				func(evt *proto.LogEntryAdded) {
-					if evt.Entry != nil {
-						msg, _ := json.Marshal(evt.Entry)
-						e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
-					}
-				})()
+			evtWg.Add(1)
+			go func() {
+				defer evtWg.Done()
+				page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+					e.logConsoleArgs(page, evt.Args, jobId)
+				},
+					func(evt *proto.LogEntryAdded) {
+						if evt.Entry != nil {
+							msg, _ := json.Marshal(evt.Entry)
+							e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
+						}
+					})()
+			}()
 		}
 
 		// no JS event, proceed as expected
@@ -297,8 +331,9 @@ func needsNoSandbox() bool {
 func (e *Engine) Shutdown() {
 	e.logger.Info("Shutting down render.Engine...")
 	e.BrowserPool.Cleanup(func(p *rod.Browser) {
-		// shutdown browsers
-		p.MustClose()
+		// In shared-launcher mode, the first Close() kills Chrome and
+		// subsequent calls fail; use non-panicking Close to handle this.
+		p.Close()
 	})
 	e.ServerPool.Shutdown()
 }
