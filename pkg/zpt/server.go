@@ -88,6 +88,6 @@ func (z *ZptServer) Run() error {
 	return nil
 }
 func (z *ZptServer) Shutdown(ctx context.Context) error {
-	z.logger.Info(fmt.Sprintf("Shutting down server"), log.KV{"address": z.Server.Addr})
+	z.logger.Info("Shutting down server", log.KV{"address": z.Server.Addr})
 	return z.Server.Shutdown(ctx)
 }

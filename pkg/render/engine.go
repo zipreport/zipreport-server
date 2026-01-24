@@ -268,7 +268,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	if err == nil {
 		buf, err = io.ReadAll(pdf)
 	}
-	elapsed := time.Now().Sub(start)
+	elapsed := time.Since(start)
 	result := &JobResult{
 		ElapsedTime: elapsed.Seconds(),
 		Success:     err == nil,

@@ -38,7 +38,7 @@ func NewServerPool(limit int, basePort int, m *monitor.Metrics, logger *log.Logg
 }
 
 func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
-	_ = <-p.slots // read slot
+	<-p.slots // read slot
 	p.mx.Lock()
 	idx := -1
 	for i, val := range p.pool {
@@ -61,7 +61,7 @@ func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
 	p.mx.Unlock()
 	p.metrics.HttpServers.Inc()
 	go func() {
-		server.Run() // blocking call
+		_ = server.Run() // blocking call; error logged inside Run()
 		p.metrics.HttpServers.Dec()
 	}()
 	return server
@@ -72,7 +72,7 @@ func (p *ServerPool) RemoveServer(srv *ZptServer) bool {
 	defer p.mx.Unlock()
 	for i, v := range p.pool {
 		if srv == v {
-			srv.Shutdown(p.ctx)
+			_ = srv.Shutdown(p.ctx)
 			p.pool[i] = nil
 			p.slots <- nil // recover slot
 			return true

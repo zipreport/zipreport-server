@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestError_CorruptZip tests that a corrupt ZIP file returns 400
@@ -107,8 +108,8 @@ func TestError_EmptyUpload(t *testing.T) {
 	// Write zero bytes to the part
 	_, _ = part.Write([]byte{})
 
-	writer.WriteField("page_size", "A4")
-	writer.WriteField("margins", "standard")
+	require.NoError(t, writer.WriteField("page_size", "A4"))
+	require.NoError(t, writer.WriteField("margins", "standard"))
 	writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
@@ -131,8 +132,8 @@ func TestError_NoFileField(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	writer.WriteField("page_size", "A4")
-	writer.WriteField("margins", "standard")
+	require.NoError(t, writer.WriteField("page_size", "A4"))
+	require.NoError(t, writer.WriteField("margins", "standard"))
 	writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
