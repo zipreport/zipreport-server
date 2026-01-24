@@ -8,7 +8,7 @@ GOFMT=$(GOCMD) fmt
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS = -ldflags="-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build test test-integration test-short clean fmt lint docker certificate
+.PHONY: all build test test-integration test-short test-fixtures clean fmt lint docker certificate
 
 all: build
 
@@ -20,10 +20,13 @@ test:
 	$(GOTEST) -v -p 1 ./test/...
 
 test-integration:
-	$(GOTEST) -v -p 1 -timeout=5m ./test/...
+	$(GOTEST) -v -p 1 -timeout=10m ./test/...
 
 test-short:
 	$(GOTEST) -v -short -p 1 ./test/...
+
+test-fixtures:
+	cd test && ./generate_fixtures.sh
 
 clean:
 	$(GOCLEAN)

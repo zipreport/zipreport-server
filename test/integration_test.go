@@ -32,7 +32,7 @@ var (
 
 // setupTestServer creates a test API server instance
 func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 
 	// Configure logger
 	logConfig := log.NewDefaultConfig()

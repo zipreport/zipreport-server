@@ -55,8 +55,8 @@ jobs:
         run: make build
 
       - name: Run tests
-        run: make test-short
-        timeout-minutes: 5
+        run: make test-integration
+        timeout-minutes: 10
 
       - name: Generate SBOM (CycloneDX)
         uses: CycloneDX/gh-gomod-generate-sbom@v2
@@ -99,3 +99,37 @@ jobs:
             VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  e2e-docker:
+    runs-on: ubuntu-24.04
+    needs: build-docker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t zipreport-server:e2e .
+
+      - name: Run container
+        run: |
+          docker run -d --name zipreport-e2e \
+            -p 6543:6543 \
+            -e ZIPREPORT_API_KEY=test-key \
+            zipreport-server:e2e
+          sleep 5
+
+      - name: E2E render test
+        run: |
+          HTTP_CODE=$(curl -s -o response.pdf -w "%{http_code}" \
+            -X POST http://localhost:6543/v2/render \
+            -H "X-Auth-Key: test-key" \
+            -F "report=@test/fixtures/test.zpt" \
+            -F "page_size=A4" \
+            -F "margins=standard")
+          [ "$HTTP_CODE" = "200" ] || (echo "Expected 200, got $HTTP_CODE"; exit 1)
+          head -c 5 response.pdf | grep -q '%PDF' || (echo "Not a valid PDF"; exit 1)
+          echo "E2E Docker test passed"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f zipreport-e2e

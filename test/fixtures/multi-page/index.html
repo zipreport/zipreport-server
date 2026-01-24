@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Multi Page Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .page-break { page-break-after: always; }
+        h1 { color: #333; }
+        .content { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="page-break">
+        <h1>Page 1</h1>
+        <div class="content">
+            <p>This is the first page of the multi-page report.</p>
+            <p>It contains enough content to fill a page.</p>
+        </div>
+    </div>
+    <div class="page-break">
+        <h1>Page 2</h1>
+        <div class="content">
+            <p>This is the second page of the multi-page report.</p>
+            <p>The CSS page-break-after property forces this onto a new page.</p>
+        </div>
+    </div>
+    <div>
+        <h1>Page 3</h1>
+        <div class="content">
+            <p>This is the third and final page.</p>
+        </div>
+    </div>
+</body>
+</html>
