@@ -7,6 +7,19 @@ This document describes all available configuration options for ZipReport Server
 The configuration file is a JSON file that defines settings for the API server, Prometheus metrics, ZipReport rendering
 engine, and logging. A complete example is available at `config/config.complete.json`.
 
+## Environment Variable Overrides
+
+The following environment variables can be used to override configuration file values. This is particularly useful for Docker deployments and CI/CD pipelines.
+
+| Variable           | Overrides                          | Description                                    |
+|--------------------|------------------------------------|------------------------------------------------|
+| `ZIPREPORT_API_KEY`| `apiServer.options.authTokenSecret`| API authentication key. Takes precedence over config file. |
+
+Example:
+```shell
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:latest
+```
+
 ## Configuration Sections
 
 ### apiServer

@@ -11,21 +11,28 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
 **Jobs:**
 
 1. **test** - Runs tests and code quality checks
-   - Sets up Go 1.24.7
-   - Caches Go modules for faster builds
+   - Sets up Go 1.24.12
    - Downloads and verifies dependencies
    - Runs `go fmt` to check code formatting
    - Runs `go vet` for static analysis
+   - Runs `golangci-lint` for comprehensive linting
+   - Runs `govulncheck` for vulnerability scanning
    - Builds the project with `make build`
-   - Runs tests with `make test-short` (10 minute timeout)
-   - Generates Software Bill of Materials (SBOM) in CycloneDX format
-   - Generates Software Bill of Materials (SBOM) in SPDX format
+   - Runs tests with `make test-integration` (10 minute timeout)
+   - Generates Software Bill of Materials (SBOM) in CycloneDX and SPDX formats
    - Uploads SBOM files as artifacts (retained for 90 days)
 
-2. **build-docker** - Builds Docker image (requires test to pass)
+2. **build-docker** - Builds multi-platform Docker image (requires test to pass)
+   - Sets up QEMU for cross-platform builds
    - Sets up Docker Buildx
-   - Builds Docker image without pushing
+   - Builds for `linux/amd64` and `linux/arm64` platforms
    - Uses GitHub Actions cache for faster builds
+
+3. **e2e-docker** - End-to-end Docker test (requires build-docker to pass)
+   - Builds and runs Docker container
+   - Waits for container to be ready
+   - Sends a test render request
+   - Validates PDF response
 
 **Triggers:**
 - Push to `development`, `main`, or `master` branches
@@ -79,7 +86,7 @@ go vet ./...
 make build
 
 # Run tests
-make test-short
+make test-integration
 ```
 
 ### Docker Build
@@ -88,7 +95,10 @@ make test-short
 # Build Docker image
 docker build -t zipreport-server:local .
 
-# Run container
+# Run container with API key
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:local
+
+# Or with custom config
 docker run -p 6543:6543 -v $(pwd)/config:/app/config zipreport-server:local
 ```
 
@@ -169,8 +179,8 @@ All actions are pinned to major versions to receive automatic updates:
 
 If tests fail:
 1. Check the test output in the Actions tab
-2. Run tests locally: `make test-short`
-3. Ensure Go 1.24.7 is installed locally
+2. Run tests locally: `make test-integration`
+3. Ensure Go 1.24.12 is installed locally
 
 ### Docker Build Failures
 

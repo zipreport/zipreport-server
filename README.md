@@ -114,6 +114,14 @@ Prometheus metrics endpoint. Besides the default internal Go metrics, the follow
 
 zipreport-server performs header-based authentication using the token specified in your configuration file (`apiServer.options.authTokenSecret`). Clients must pass the authentication token in the `X-Auth-Key` header.
 
+**Environment Variable Override**
+
+The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, which takes precedence over the config file. This is useful for Docker deployments:
+
+```shell
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
+```
+
 Example:
 ```bash
 curl -X POST http://localhost:6543/v2/render \
@@ -129,16 +137,29 @@ Without authentication, requests will receive `401 Unauthorized`.
 
 ### Running with Docker
 
-Starting with version 2.3.0, zipreport-server uses a configuration file instead of environment variables. You must mount a configuration file to `/app/config/config.json` in the container.
+Starting with version 2.3.0, zipreport-server uses a configuration file. The Docker image includes a default configuration, so you can run with just the `ZIPREPORT_API_KEY` environment variable for basic usage. For advanced configuration, mount a custom config file to `/app/config/config.json`.
 
-**Quick Start with Default Configuration**
+**Multi-Platform Support**
+
+Docker images are built for both `linux/amd64` and `linux/arm64`. This enables running on:
+- Intel/AMD servers and desktops (amd64)
+- Apple Silicon Macs — M1/M2/M3/M4 (arm64)
+- ARM64 cloud instances — AWS Graviton, Ampere, etc.
+
+The correct image is selected automatically by Docker based on the host architecture. Chromium is sourced from different locations depending on the platform:
+- **amd64**: Google's Chromium snapshots (same source as go-rod's default)
+- **arm64**: Playwright CDN (arm64 Chromium builds)
+
+Both variants are functionally identical and store the browser in rod's expected cache location.
+
+**Quick Start**
 
 ```shell
 # Build locally
-docker build . --tag zipreport-server:2.3.0
+docker build . --tag zipreport-server:2.3.1
 
-# Run with sample configuration (HTTP only, no TLS)
-docker run -p 6543:6543 zipreport-server:2.3.0
+# Run with API key (uses default config, HTTP only, no TLS)
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
 ```
 
 **Production Deployment with Custom Configuration**
@@ -172,7 +193,7 @@ Then run with your configuration:
 # Mount your configuration directory
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.0
+  zipreport-server:2.3.1
 ```
 
 **With TLS/HTTPS**
@@ -204,7 +225,7 @@ Run with TLS:
 ```shell
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.0
+  zipreport-server:2.3.1
 ```
 
 **Using Prebuilt Image**
@@ -214,12 +235,12 @@ docker run -p 6543:6543 \
 docker pull ghcr.io/zipreport/zipreport-server:latest
 
 # Or specific version
-docker pull ghcr.io/zipreport/zipreport-server:2.3.0
+docker pull ghcr.io/zipreport/zipreport-server:2.3.1
 
 # Run with mounted configuration
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  ghcr.io/zipreport/zipreport-server:2.3.0
+  ghcr.io/zipreport/zipreport-server:2.3.1
 ```
 
 **Docker Compose Example**
@@ -229,7 +250,7 @@ version: '3.8'
 
 services:
   zipreport:
-    image: ghcr.io/zipreport/zipreport-server:2.3.0
+    image: ghcr.io/zipreport/zipreport-server:2.3.1
     ports:
       - "6543:6543"
       - "2220:2220"  # Prometheus metrics (if enabled)
@@ -265,7 +286,15 @@ make
 
 Binaries will be created in `./bin/`:
 - `bin/zipreport-server` - Main server binary
-- `bin/browser-update` - Browser update utility
+- `bin/browser-update` - Browser download utility (fetches Chromium for the current platform)
+
+**Updating Chromium Versions**
+
+The Chromium revision constants are defined in `pkg/browser/browser.go`:
+- `Revision` — Chromium snapshot revision for amd64 (must match rod's `RevisionDefault` so the launcher finds it in the cache)
+- `RevisionPlaywright` — Playwright CDN revision for arm64 Linux builds
+
+To update the bundled Chromium version, change these constants and rebuild. The `browser-update` command will download the new version on next run.
 
 **Generate Self-Signed Certificates**
 
@@ -311,4 +340,14 @@ cp config/config.sample.json config/config.json
 # Or use default config location
 ./bin/zipreport-server
 ```
+w
+
+## Sponsors
+
+The [ZipReport Project](https://github.com/zipreport/) is sponsored exclusively by [BlackShield](https://blackshield.pt) 
+
+
+## License 
+
+MIT License - see LICENSE file for details
 

@@ -45,6 +45,9 @@ func (z *ZipReport) Build(appName string) {
 	cfg := NewConfig()
 	z.AbortFatal(z.Config.Get(cfg))
 
+	// Apply environment variable overrides (e.g., ZIPREPORT_API_KEY)
+	cfg.ApplyEnvOverrides()
+
 	z.AbortFatal(cfg.Validate())
 
 	// initialize logger

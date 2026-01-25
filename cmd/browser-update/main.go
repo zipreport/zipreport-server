@@ -2,14 +2,15 @@ package main
 
 import (
 	"fmt"
-
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/utils"
+	"os"
+	"zipreport-server/pkg/browser"
 )
 
 func main() {
-	p, err := launcher.NewBrowser().Get()
-	utils.E(err)
-
+	p, err := browser.Download()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Println(p)
 }

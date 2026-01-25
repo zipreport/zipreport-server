@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/monitor"
@@ -28,7 +29,8 @@ type Engine struct {
 	logger         *log.Logger
 	httpDebug      bool
 	consoleLogging bool
-	launcherURL    string // Shared launcher URL for no-sandbox mode
+	launcherURL    string          // Shared launcher URL for no-sandbox mode
+	ctx            context.Context // Application-level context for pooled browsers
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -50,6 +52,7 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 		metrics:     m,
 		logger:      logger,
 		launcherURL: launcherURL,
+		ctx:         ctx,
 	}
 }
 
@@ -61,9 +64,20 @@ func (e *Engine) EnableHttpDebugging() {
 	e.httpDebug = true
 }
 
-func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
+func (e *Engine) RenderJob(job *Job) *JobResult {
 	jobId := job.Id.String()
 	e.logger.Debug("starting job...", log.KV{"id": jobId, "job": job})
+
+	// Validate timeouts to prevent immediately-canceled contexts
+	jobTimeout := job.JobTimeoutS
+	if jobTimeout <= 0 {
+		jobTimeout = JobDefaultTimeout
+	}
+	jsTimeout := job.JsTimeoutS
+	if jsTimeout <= 0 {
+		jsTimeout = JobDefaultJsTimeout
+	}
+
 	server := e.ServerPool.BuildServer(job.Zpt)
 	if server == nil {
 		err := errors.New("failed to build server")
@@ -75,9 +89,10 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 			Error:       err,
 		}
 	}
+	defer e.ServerPool.RemoveServer(server)
 	e.logger.Info("started ephemeral http server", log.KV{"id": jobId, "address": server.Server.Addr})
 
-	browser, err := e.GetBrowser(ctx)
+	browser, err := e.GetBrowser()
 	if err != nil {
 		e.logger.Error(err, "could not fetch browser instance", log.KV{"id": jobId})
 		return &JobResult{
@@ -87,17 +102,53 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 			Error:       err,
 		}
 	}
-	defer e.BrowserPool.Put(browser)
-	defer e.ServerPool.RemoveServer(server)
+	// Track whether browser is healthy; only return to pool if so
+	browserOK := false
+	defer func() {
+		if browserOK {
+			e.BrowserPool.Put(browser)
+		} else {
+			e.logger.Warn("discarding broken browser instance", log.KV{"id": jobId})
+			browser.Close()
+		}
+	}()
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
 	start := time.Now()
-	browser.MustIgnoreCertErrors(job.IgnoreSSLErrors)
+	err = browser.IgnoreCertErrors(job.IgnoreSSLErrors)
+	if err != nil {
+		e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: 0,
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
+
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
-	page := browser.
-		Timeout(time.Duration(job.JobTimeoutS) * time.Second).
-		MustPage()
-	defer page.MustClose()
+	pageCtx, pageCancel := context.WithTimeout(e.ctx, time.Duration(jobTimeout)*time.Second)
+	page, err := browser.Context(pageCtx).Page(proto.TargetCreateTarget{})
+	if err != nil {
+		pageCancel()
+		e.logger.Error(err, "failed to create page", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: time.Since(start).Seconds(),
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
+	// Page created successfully — browser connection is alive
+	browserOK = true
+
+	// WaitGroup to synchronize event goroutines with page closure
+	var evtWg sync.WaitGroup
+	defer func() {
+		pageCancel()                // cancel page context, immediately unblocking event goroutines
+		evtWg.Wait()                // wait for event goroutines to finish
+		page.Context(e.ctx).Close() // close tab using a live context
+	}()
 
 	if job.UseJSEvent {
 		// render using jsEvent
@@ -108,64 +159,107 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 		done := make(chan struct{})
 		closed := atomic.Int32{}
 
-		go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-			if e.consoleLogging {
-				// logger JS console output
-				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
-			}
+		evtWg.Add(1)
+		go func() {
+			defer evtWg.Done()
+			page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+				if e.consoleLogging {
+					// log JS console output
+					e.logConsoleArgs(page, evt.Args, jobId)
+				}
 
-			if page.MustObjectToJSON(evt.Args[0]).String() == "zpt-view-ready" {
-				e.logger.Debug("console message received", log.KV{"id": jobId})
-				if closed.CompareAndSwap(0, 1) {
-					close(done)
+				if len(evt.Args) > 0 {
+					if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
+						e.logger.Debug("console message received", log.KV{"id": jobId})
+						if closed.CompareAndSwap(0, 1) {
+							close(done)
+						}
+					}
 				}
-			}
-		},
-			func(evt *proto.LogEntryAdded) {
-				if e.consoleLogging && evt.Entry != nil {
-					// logger browser logger output
-					msg, _ := json.Marshal(evt.Entry)
-					e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
-				}
-			})()
+			},
+				func(evt *proto.LogEntryAdded) {
+					if e.consoleLogging && evt.Entry != nil {
+						msg, _ := json.Marshal(evt.Entry)
+						e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
+					}
+				})()
+		}()
 
 		// JS timeout procedure
-		cancel := time.AfterFunc(time.Duration(job.JsTimeoutS)*time.Second, func() {
+		cancel := time.AfterFunc(time.Duration(jsTimeout)*time.Second, func() {
 			close(timeout)
 		})
+		defer cancel.Stop()
 
 		wait := page.WaitEvent(&proto.PageLoadEventFired{})
-		page.MustNavigate(url).MustWaitLoad()
+		err = page.Navigate(url)
+		if err != nil {
+			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
+		err = page.WaitLoad()
+		if err != nil {
+			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
 		wait()
 		select {
 		case <-done:
-			cancel.Stop()
 			break
 		case <-timeout:
 			e.logger.Warn("waiting for console message timed out", log.KV{"id": jobId})
-			if closed.CompareAndSwap(0, 1) {
-				close(done)
-			}
 		}
 	} else {
 		e.logger.Debug("using regular rendering", log.KV{"id": jobId})
 
 		if e.consoleLogging {
-			// logger console & browser logger
-
-			go page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				e.logger.Info(page.MustObjectsToJSON(evt.Args).String(), log.KV{"id": jobId, "src": "js console"})
-			},
-				func(evt *proto.LogEntryAdded) {
-					if evt.Entry != nil {
-						msg, _ := json.Marshal(evt.Entry)
-						e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
-					}
-				})()
+			// log console & browser logger
+			evtWg.Add(1)
+			go func() {
+				defer evtWg.Done()
+				page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+					e.logConsoleArgs(page, evt.Args, jobId)
+				},
+					func(evt *proto.LogEntryAdded) {
+						if evt.Entry != nil {
+							msg, _ := json.Marshal(evt.Entry)
+							e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
+						}
+					})()
+			}()
 		}
 
 		// no JS event, proceed as expected
-		page.MustNavigate(url).MustWaitLoad()
+		err = page.Navigate(url)
+		if err != nil {
+			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
+		err = page.WaitLoad()
+		if err != nil {
+			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
+			return &JobResult{
+				ElapsedTime: time.Since(start).Seconds(),
+				Success:     false,
+				Output:      nil,
+				Error:       err,
+			}
+		}
 		// settling time
 		time.Sleep(time.Duration(job.JobSettlingTimeMs) * time.Millisecond)
 	}
@@ -174,7 +268,7 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 	if err == nil {
 		buf, err = io.ReadAll(pdf)
 	}
-	elapsed := time.Now().Sub(start)
+	elapsed := time.Since(start)
 	result := &JobResult{
 		ElapsedTime: elapsed.Seconds(),
 		Success:     err == nil,
@@ -190,15 +284,27 @@ func (e *Engine) RenderJob(ctx context.Context, job *Job) *JobResult {
 	return result
 }
 
-func (e *Engine) GetBrowser(ctx context.Context) (*rod.Browser, error) {
+func (e *Engine) logConsoleArgs(page *rod.Page, args []*proto.RuntimeRemoteObject, jobId string) {
+	var parts []string
+	for _, obj := range args {
+		if val, err := page.ObjectToJSON(obj); err == nil {
+			parts = append(parts, val.String())
+		}
+	}
+	if len(parts) > 0 {
+		e.logger.Info(fmt.Sprintf("%v", parts), log.KV{"id": jobId, "src": "js console"})
+	}
+}
+
+func (e *Engine) GetBrowser() (*rod.Browser, error) {
 	return e.BrowserPool.Get(func() (*rod.Browser, error) {
 		var browser *rod.Browser
 		if e.launcherURL != "" {
 			// Use shared launcher with --no-sandbox
-			browser = rod.New().ControlURL(e.launcherURL).Context(ctx)
+			browser = rod.New().ControlURL(e.launcherURL).Context(e.ctx)
 		} else {
 			// Normal launch with sandbox
-			browser = rod.New().Context(ctx)
+			browser = rod.New().Context(e.ctx)
 		}
 
 		err := browser.Connect()
@@ -225,8 +331,9 @@ func needsNoSandbox() bool {
 func (e *Engine) Shutdown() {
 	e.logger.Info("Shutting down render.Engine...")
 	e.BrowserPool.Cleanup(func(p *rod.Browser) {
-		// shutdown browsers
-		p.MustClose()
+		// In shared-launcher mode, the first Close() kills Chrome and
+		// subsequent calls fail; use non-panicking Close to handle this.
+		p.Close()
 	})
 	e.ServerPool.Shutdown()
 }

@@ -2,5 +2,4 @@
 set -Eeo pipefail
 
 cd /app
-./browser-update
-./zipreport-server -c config/config.json
+exec dumb-init -- ./zipreport-server -c config/config.json

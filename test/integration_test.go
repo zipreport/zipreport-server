@@ -32,7 +32,7 @@ var (
 
 // setupTestServer creates a test API server instance
 func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 
 	// Configure logger
 	logConfig := log.NewDefaultConfig()
@@ -181,7 +181,7 @@ func TestRenderEndpoint_MissingFile(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	writer.WriteField("page_size", "A4")
+	require.NoError(t, writer.WriteField("page_size", "A4"))
 	writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)

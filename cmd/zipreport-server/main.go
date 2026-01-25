@@ -10,10 +10,10 @@ import (
 	"github.com/oddbit-project/blueprint/utils"
 )
 
-const (
-	ProductName = "ZipReport Server"
-	Version     = "2.2.0"
-)
+const ProductName = "ZipReport Server"
+
+// Version is set at build time via -ldflags "-X main.Version=..."
+var Version = "2.2.0"
 
 // command-line args
 var cliArgs = &internal.CliArgs{
