@@ -137,7 +137,7 @@ Without authentication, requests will receive `401 Unauthorized`.
 
 ### Running with Docker
 
-Starting with version 2.3.0, zipreport-server uses a configuration file instead of environment variables. You must mount a configuration file to `/app/config/config.json` in the container.
+Starting with version 2.3.0, zipreport-server uses a configuration file. The Docker image includes a default configuration, so you can run with just the `ZIPREPORT_API_KEY` environment variable for basic usage. For advanced configuration, mount a custom config file to `/app/config/config.json`.
 
 **Multi-Platform Support**
 
@@ -152,14 +152,14 @@ The correct image is selected automatically by Docker based on the host architec
 
 Both variants are functionally identical and store the browser in rod's expected cache location.
 
-**Quick Start with Default Configuration**
+**Quick Start**
 
 ```shell
 # Build locally
-docker build . --tag zipreport-server:2.3.0
+docker build . --tag zipreport-server:2.3.1
 
-# Run with sample configuration (HTTP only, no TLS)
-docker run -p 6543:6543 zipreport-server:2.3.0
+# Run with API key (uses default config, HTTP only, no TLS)
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
 ```
 
 **Production Deployment with Custom Configuration**
@@ -193,7 +193,7 @@ Then run with your configuration:
 # Mount your configuration directory
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.0
+  zipreport-server:2.3.1
 ```
 
 **With TLS/HTTPS**
@@ -225,7 +225,7 @@ Run with TLS:
 ```shell
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.0
+  zipreport-server:2.3.1
 ```
 
 **Using Prebuilt Image**
@@ -235,12 +235,12 @@ docker run -p 6543:6543 \
 docker pull ghcr.io/zipreport/zipreport-server:latest
 
 # Or specific version
-docker pull ghcr.io/zipreport/zipreport-server:2.3.0
+docker pull ghcr.io/zipreport/zipreport-server:2.3.1
 
 # Run with mounted configuration
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  ghcr.io/zipreport/zipreport-server:2.3.0
+  ghcr.io/zipreport/zipreport-server:2.3.1
 ```
 
 **Docker Compose Example**
@@ -250,7 +250,7 @@ version: '3.8'
 
 services:
   zipreport:
-    image: ghcr.io/zipreport/zipreport-server:2.3.0
+    image: ghcr.io/zipreport/zipreport-server:2.3.1
     ports:
       - "6543:6543"
       - "2220:2220"  # Prometheus metrics (if enabled)
@@ -340,4 +340,14 @@ cp config/config.sample.json config/config.json
 # Or use default config location
 ./bin/zipreport-server
 ```
+
+
+## Sponsors
+
+The [ZipReport Project](https://github.com/zipreport/) is sponsored exclusively by [BlackShield](https://blackshield.pt) 
+
+
+## License 
+
+MIT License - see LICENSE file for details
 
