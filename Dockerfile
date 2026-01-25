@@ -43,14 +43,15 @@ COPY --from=builder /app/zipreport-server /app/
 COPY --from=builder /app/browser-update /app/
 COPY --from=builder /app/config/config.sample.json /app/config/config.json
 
-# Download browser for the target platform (supports amd64 and arm64)
-RUN /app/browser-update
-RUN ln -s "/root/.cache/rod/browser/$(ls -1 /root/.cache/rod/browser | head -1)/chrome" /usr/bin/chrome
+# Non-root user (create before browser download so we can use the correct home dir)
+RUN useradd -r -m -s /bin/false zipreport && \
+    mkdir -p /app/config/ssl
 
-# Non-root user
-RUN useradd -r -s /bin/false zipreport && \
-    mkdir -p /app/config/ssl && \
-    chown -R zipreport:zipreport /app /root/.cache/rod
+# Download browser for the target platform (supports amd64 and arm64)
+ENV HOME=/home/zipreport
+RUN /app/browser-update
+RUN ln -s "/home/zipreport/.cache/rod/browser/$(ls -1 /home/zipreport/.cache/rod/browser | head -1)/chrome" /usr/bin/chrome
+RUN chown -R zipreport:zipreport /home/zipreport/.cache /app
 
 RUN touch /.dockerenv
 
