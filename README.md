@@ -340,7 +340,7 @@ cp config/config.sample.json config/config.json
 # Or use default config location
 ./bin/zipreport-server
 ```
-
+w
 
 ## Sponsors
 
