@@ -142,6 +142,7 @@ jobs:
             -X POST http://localhost:6543/v2/render \
             -H "X-Auth-Key: test-key" \
             -F "report=@test/fixtures/test.zpt" \
+            -F "script=test.html" \
             -F "page_size=A4" \
             -F "margins=standard")
           if [ "$HTTP_CODE" != "200" ]; then
