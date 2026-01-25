@@ -114,6 +114,14 @@ Prometheus metrics endpoint. Besides the default internal Go metrics, the follow
 
 zipreport-server performs header-based authentication using the token specified in your configuration file (`apiServer.options.authTokenSecret`). Clients must pass the authentication token in the `X-Auth-Key` header.
 
+**Environment Variable Override**
+
+The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, which takes precedence over the config file. This is useful for Docker deployments:
+
+```shell
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
+```
+
 Example:
 ```bash
 curl -X POST http://localhost:6543/v2/render \

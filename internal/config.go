@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"zipreport-server/pkg/metrics"
 	"zipreport-server/pkg/render"
 
@@ -116,6 +117,16 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+// ApplyEnvOverrides applies environment variable overrides to the config.
+// Environment variables take precedence over config file values.
+// Supported variables:
+//   - ZIPREPORT_API_KEY: overrides apiServer.options.authTokenSecret
+func (c *Config) ApplyEnvOverrides() {
+	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
+		c.ApiServer.Options[httpserver.OptAuthTokenSecret] = apiKey
+	}
 }
 
 func (c *Config) DumpDefaults() (string, error) {

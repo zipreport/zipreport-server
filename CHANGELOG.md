@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Local Chromium download package (`pkg/browser`) with arm64 Linux support, replacing rod's built-in downloader which lacks arm64 builds
 - Multi-platform Docker image support (`linux/amd64`, `linux/arm64`) for Apple Silicon and ARM64 servers
+- `ZIPREPORT_API_KEY` environment variable override for `authTokenSecret` config option
 - End-to-end rendering tests: JS event mode, JS timeout, multi-resource, multi-page, PDF content validation, all page sizes, landscape/portrait, custom margins
 - Error scenario tests: corrupt ZIP, missing index file, zero timeout, empty upload, no file field
 - Concurrency tests: parallel renders, exceed pool size, independent jobs with different page sizes
