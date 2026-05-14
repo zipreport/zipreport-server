@@ -64,7 +64,7 @@ jobs:
           cyclonedx-gomod mod -licenses -json -output bom-cyclonedx.json
 
       - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.24.0
         with:
           format: spdx-json
           output-file: bom-spdx.json
