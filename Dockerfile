@@ -24,6 +24,7 @@ FROM ubuntu:26.04
 LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 
 RUN apt-get update > /dev/null && \
+    apt-get upgrade -y > /dev/null && \
     apt-get install --no-install-recommends -y \
     libnss3 libxss1 libasound2t64 libxtst6 libgtk-3-0t64 libgbm1 \
     ca-certificates \
