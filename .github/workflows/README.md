@@ -11,11 +11,11 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
 **Jobs:**
 
 1. **test** - Runs tests and code quality checks
-   - Sets up Go 1.24.12
+   - Sets up Go 1.26.3
    - Downloads and verifies dependencies
    - Runs `go fmt` to check code formatting
    - Runs `go vet` for static analysis
-   - Runs `golangci-lint` for comprehensive linting
+   - Runs `golangci-lint` (v2) for comprehensive linting
    - Runs `govulncheck` for vulnerability scanning
    - Builds the project with `make build`
    - Runs tests with `make test-integration` (10 minute timeout)
@@ -50,7 +50,9 @@ Builds and publishes Docker images to GitHub Container Registry (ghcr.io).
    - Uses GitHub Actions cache for layer caching
    - Generates semantic version tags
    - Generates and attaches SBOM and provenance attestations to images
-   - Generates standalone SBOM files in CycloneDX and SPDX formats
+   - Scans the image with Trivy for CRITICAL vulnerabilities (fails the build if found)
+   - Uploads Trivy SARIF results to the GitHub Security tab
+   - Generates image-based SBOM files in CycloneDX and SPDX formats (includes OS packages and runtime dependencies)
    - Uploads SBOM files as artifacts (retained for 90 days)
    - Attaches SBOM files to GitHub releases automatically
 
@@ -65,10 +67,13 @@ Builds and publishes Docker images to GitHub Container Registry (ghcr.io).
 **Triggers:**
 - Push to `main` or `master` branches (tagged as `latest`)
 - GitHub releases (tagged with version number)
+- Weekly schedule (Mondays at 06:00 UTC) to pick up base image and dependency patches
+- Manual trigger via `workflow_dispatch`
 
 **Permissions Required:**
-- `contents: read` - Read repository contents
+- `contents: write` - Read repository contents and attach SBOMs to releases
 - `packages: write` - Push to GitHub Container Registry
+- `security-events: write` - Upload Trivy SARIF results
 - `GITHUB_TOKEN` - Automatically provided by GitHub Actions
 
 ## Running Workflows Locally
@@ -102,16 +107,31 @@ docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:lo
 docker run -p 6543:6543 -v $(pwd)/config:/app/config zipreport-server:local
 ```
 
+## Security Scanning
+
+### Vulnerability Scanning
+
+The Docker workflow scans published images using [Trivy](https://trivy.dev/):
+- Scans for OS package and language-specific vulnerabilities
+- Fails the build if CRITICAL severity vulnerabilities are found
+- Results are uploaded to the GitHub Security tab (Code scanning alerts)
+- Weekly rebuilds ensure base image patches are picked up automatically
+
+### Dependency Scanning
+
+The CI workflow runs `govulncheck` to detect known vulnerabilities in Go dependencies at the source level.
+
 ## Software Bill of Materials (SBOM)
 
-Both workflows generate comprehensive Software Bill of Materials (SBOM) files to provide transparency about dependencies and components.
+Both workflows generate Software Bill of Materials (SBOM) files.
 
 ### SBOM Formats
 
 1. **CycloneDX** (`bom-cyclonedx.json`)
    - Industry-standard SBOM format
    - Includes license information
-   - Generated using `CycloneDX/gh-gomod-generate-sbom`
+   - CI: generated from Go modules using `cyclonedx-gomod`
+   - Docker: generated from the built image using Anchore Syft
    - Compatible with dependency-track and other SBOM tools
 
 2. **SPDX** (`bom-spdx.json`)
@@ -119,6 +139,11 @@ Both workflows generate comprehensive Software Bill of Materials (SBOM) files to
    - Generated using Anchore Syft
    - Widely adopted across industries
    - Compatible with government compliance requirements
+
+### CI vs Docker SBOMs
+
+- **CI SBOMs** cover Go module dependencies (source-level)
+- **Docker SBOMs** cover the full container image including OS packages, Chrome, fonts, and all runtime dependencies
 
 ### Accessing SBOMs
 
@@ -162,16 +187,22 @@ Both workflows use GitHub Actions cache:
 - **ci.yml**: Caches Go modules (`~/.cache/go-build`, `~/go/pkg/mod`)
 - **docker.yml**: Caches Docker build layers (GitHub Actions cache backend)
 
-## Upgrading Actions
+## Action Versions
 
-All actions are pinned to major versions to receive automatic updates:
-- `actions/checkout@v4`
-- `actions/setup-go@v5`
-- `actions/cache@v4`
-- `docker/setup-buildx-action@v3`
-- `docker/login-action@v3`
-- `docker/metadata-action@v5`
-- `docker/build-push-action@v6`
+Actions are pinned to Node.js 24-compatible versions:
+- `actions/checkout@v6`
+- `actions/setup-go@v6`
+- `actions/upload-artifact@v6`
+- `docker/setup-buildx-action@v4`
+- `docker/setup-qemu-action@v4`
+- `docker/login-action@v4`
+- `docker/metadata-action@v6`
+- `docker/build-push-action@v7`
+- `golangci/golangci-lint-action@v9`
+- `aquasecurity/trivy-action@v0.36.0`
+- `anchore/sbom-action@v0.24.0`
+- `github/codeql-action/upload-sarif@v4`
+- `softprops/action-gh-release@v3`
 
 ## Troubleshooting
 
@@ -180,7 +211,7 @@ All actions are pinned to major versions to receive automatic updates:
 If tests fail:
 1. Check the test output in the Actions tab
 2. Run tests locally: `make test-integration`
-3. Ensure Go 1.24.12 is installed locally
+3. Ensure Go 1.26.3 is installed locally
 
 ### Docker Build Failures
 
@@ -188,6 +219,13 @@ If Docker builds fail:
 1. Check the build logs in the Actions tab
 2. Build locally: `docker build -t test .`
 3. Verify Dockerfile syntax and dependencies
+
+### Trivy Scan Failures
+
+If the Trivy scan fails the build:
+1. Check the GitHub Security tab for the specific CVEs
+2. Update the base image or affected packages
+3. Trigger a manual rebuild via `workflow_dispatch` after fixes
 
 ### Permission Issues
 
