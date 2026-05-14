@@ -82,18 +82,19 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      - name: Generate SBOM (CycloneDX)
-        uses: CycloneDX/gh-gomod-generate-sbom@v2
-        with:
-          version: v1
-          args: mod -licenses -json -output bom-cyclonedx.json
-
-      - name: Generate SBOM (SPDX) from source
+      - name: Generate SBOM (CycloneDX) from Docker image
         uses: anchore/sbom-action@v0
         with:
+          image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
+          format: cyclonedx-json
+          output-file: bom-cyclonedx.json
+
+      - name: Generate SBOM (SPDX) from Docker image
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: spdx-json
           output-file: bom-spdx.json
-          path: .
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v4
