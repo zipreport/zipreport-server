@@ -5,6 +5,30 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.2]
+
+### Changed
+- Updated Go toolchain from 1.24.12 to 1.26.3
+- Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)
+- Replaced `CycloneDX/gh-gomod-generate-sbom` action with direct `cyclonedx-gomod` CLI (no Node.js 24 version available)
+- Replaced source-based SBOMs with image-based SBOMs in Docker workflow, capturing OS packages and runtime dependencies
+- Updated `golangci-lint-action` from v6 to v9 (golangci-lint v2 with Go 1.26 support)
+
+### Fixed
+- Unchecked error returns flagged by golangci-lint v2 `errcheck` across `cmd/`, `pkg/browser/`, `pkg/render/`, `pkg/zpt/`, and test files
+- `staticcheck` QF1003: converted `runtime.GOOS` if/else chain to tagged switch in `pkg/browser/browser.go`
+
+### Security
+- Added Trivy container image vulnerability scanning to Docker workflow (fails build on CRITICAL severity)
+- Added Trivy SARIF upload to GitHub Security tab
+- Added `security-events: write` permission for codeql-action
+- Added weekly scheduled Docker image rebuilds to pick up base image and dependency patches
+- Added `workflow_dispatch` trigger for manual Docker image rebuilds
+- Updated `golang.org/x/net` v0.46.0 -> v0.54.0 (GO-2026-4918)
+- Updated `github.com/jackc/pgx/v5` v5.7.6 -> v5.9.2 (CVE-2026-33816, CVE-2026-33815)
+- Updated `filippo.io/edwards25519` v1.1.0 -> v1.2.0 (GO-2026-4503)
+- Updated Go from 1.24.12 to 1.26.3 to resolve 12 stdlib vulnerabilities
+
 ## [2.3.1]
 
 ### Added
