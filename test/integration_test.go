@@ -74,7 +74,7 @@ func createMultipartRequest(t *testing.T, zipPath string, fields map[string]stri
 	// Add the zip file
 	file, err := os.Open(zipPath)
 	require.NoError(t, err)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	part, err := writer.CreateFormFile("report", filepath.Base(zipPath))
 	require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestRenderEndpoint_MissingFile(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	require.NoError(t, writer.WriteField("page_size", "A4"))
-	writer.Close()
+	_ = writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())

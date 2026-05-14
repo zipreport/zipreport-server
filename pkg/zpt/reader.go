@@ -29,7 +29,7 @@ func (z *ZptReader) ReadFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
 
@@ -45,7 +45,7 @@ func NewZptReaderFromFile(path string) (*ZptReader, error) {
 	}
 	stat, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return NewZptReader(f, stat.Size())

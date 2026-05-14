@@ -75,9 +75,10 @@ func BrowserDir() string {
 // BinPath returns the expected browser executable path.
 func BinPath() string {
 	bin := "chrome"
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		bin = "Chromium.app/Contents/MacOS/Chromium"
-	} else if runtime.GOOS == "windows" {
+	case "windows":
 		bin = "chrome.exe"
 	}
 	return filepath.Join(BrowserDir(), bin)
@@ -111,7 +112,7 @@ func Download() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
@@ -122,14 +123,14 @@ func Download() (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	written, err := io.Copy(tmpFile, resp.Body)
 	if err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return "", fmt.Errorf("download failed: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	fmt.Printf("Downloaded %d bytes\n", written)
 
@@ -158,7 +159,7 @@ func extractZip(zipPath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Determine common prefix to strip (zip archives often have a top-level dir)
 	prefix := findCommonPrefix(r.File)
@@ -200,13 +201,13 @@ func extractFile(f *zip.File, target string) error {
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	_, err = io.Copy(out, rc)
 	return err

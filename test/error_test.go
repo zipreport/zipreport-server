@@ -110,7 +110,7 @@ func TestError_EmptyUpload(t *testing.T) {
 
 	require.NoError(t, writer.WriteField("page_size", "A4"))
 	require.NoError(t, writer.WriteField("margins", "standard"))
-	writer.Close()
+	_ = writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -134,7 +134,7 @@ func TestError_NoFileField(t *testing.T) {
 	writer := multipart.NewWriter(body)
 	require.NoError(t, writer.WriteField("page_size", "A4"))
 	require.NoError(t, writer.WriteField("margins", "standard"))
-	writer.Close()
+	_ = writer.Close()
 
 	req := httptest.NewRequest("POST", "/v2/render", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
