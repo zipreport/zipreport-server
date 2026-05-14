@@ -109,7 +109,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			e.BrowserPool.Put(browser)
 		} else {
 			e.logger.Warn("discarding broken browser instance", log.KV{"id": jobId})
-			browser.Close()
+			_ = browser.Close()
 		}
 	}()
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
@@ -147,7 +147,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	defer func() {
 		pageCancel()                // cancel page context, immediately unblocking event goroutines
 		evtWg.Wait()                // wait for event goroutines to finish
-		page.Context(e.ctx).Close() // close tab using a live context
+		_ = page.Context(e.ctx).Close() // close tab using a live context
 	}()
 
 	if job.UseJSEvent {
@@ -333,7 +333,7 @@ func (e *Engine) Shutdown() {
 	e.BrowserPool.Cleanup(func(p *rod.Browser) {
 		// In shared-launcher mode, the first Close() kills Chrome and
 		// subsequent calls fail; use non-panicking Close to handle this.
-		p.Close()
+		_ = p.Close()
 	})
 	e.ServerPool.Shutdown()
 }
