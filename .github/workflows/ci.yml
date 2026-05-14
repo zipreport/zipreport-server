@@ -42,7 +42,7 @@ jobs:
         run: go vet ./...
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
@@ -59,10 +59,9 @@ jobs:
         timeout-minutes: 10
 
       - name: Generate SBOM (CycloneDX)
-        uses: CycloneDX/gh-gomod-generate-sbom@v2
-        with:
-          version: v1
-          args: mod -licenses -json -output bom-cyclonedx.json
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          cyclonedx-gomod mod -licenses -json -output bom-cyclonedx.json
 
       - name: Generate SBOM (SPDX)
         uses: anchore/sbom-action@v0
