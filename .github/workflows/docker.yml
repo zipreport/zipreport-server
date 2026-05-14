@@ -69,7 +69,7 @@ jobs:
           provenance: true
 
       - name: Scan Docker image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: sarif
@@ -84,14 +84,14 @@ jobs:
           sarif_file: trivy-results.sarif
 
       - name: Generate SBOM (CycloneDX) from Docker image
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.24.0
         with:
           image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: cyclonedx-json
           output-file: bom-cyclonedx.json
 
       - name: Generate SBOM (SPDX) from Docker image
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.24.0
         with:
           image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: spdx-json
