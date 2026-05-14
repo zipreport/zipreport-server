@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated Go toolchain from 1.24.12 to 1.26.3
+- Upgraded Docker base image from Ubuntu 22.04 (Jammy) to 26.04 (Resolute)
+- Added `apt-get upgrade` to Dockerfile to apply all available OS security patches at build time
 - Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)
 - Replaced `CycloneDX/gh-gomod-generate-sbom` action with direct `cyclonedx-gomod` CLI (no Node.js 24 version available)
 - Replaced source-based SBOMs with image-based SBOMs in Docker workflow, capturing OS packages and runtime dependencies
@@ -19,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `staticcheck` QF1003: converted `runtime.GOOS` if/else chain to tagged switch in `pkg/browser/browser.go`
 
 ### Security
-- Added Trivy container image vulnerability scanning to Docker workflow (fails build on CRITICAL severity)
+- Added Trivy container image vulnerability scanning to Docker workflow (fails build on fixable CRITICAL OS-level CVEs)
 - Added Trivy SARIF upload to GitHub Security tab
 - Added `security-events: write` permission for codeql-action
 - Added weekly scheduled Docker image rebuilds to pick up base image and dependency patches
