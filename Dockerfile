@@ -19,16 +19,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
     mkdir -p /app/config/ssl
 
-FROM ubuntu:jammy
+FROM ubuntu:26.04
 
 LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 
-ARG apt_sources="http://archive.ubuntu.com"
-
-RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list && \
-    apt-get update > /dev/null && \
+RUN apt-get update > /dev/null && \
     apt-get install --no-install-recommends -y \
-    libnss3 libxss1 libasound2 libxtst6 libgtk-3-0 libgbm1 \
+    libnss3 libxss1 libasound2t64 libxtst6 libgtk-3-0t64 libgbm1 \
     ca-certificates \
     fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
     tzdata \
