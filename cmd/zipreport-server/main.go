@@ -13,7 +13,7 @@ import (
 const ProductName = "ZipReport Server"
 
 // Version is set at build time via -ldflags "-X main.Version=..."
-var Version = "2.2.0"
+var Version = "2.3.2"
 
 // command-line args
 var cliArgs = &internal.CliArgs{
