@@ -49,7 +49,7 @@ jobs:
           PROJECT_NAME: ${{ github.event.repository.name }}
           PROJECT_VERSION: ${{ github.ref_name }}
         run: |
-          curl -sSf -X POST "https://${DTRACK_HOST}/api/v1/bom" \
+          curl -sSf -X POST "${DTRACK_HOST}/api/v1/bom" \
             -H "X-Api-Key: ${DTRACK_API_KEY}" \
             -F "autoCreate=true" \
             -F "projectName=${PROJECT_NAME}" \
