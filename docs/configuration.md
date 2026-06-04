@@ -13,7 +13,7 @@ The following environment variables can be used to override configuration file v
 
 | Variable           | Overrides                          | Description                                    |
 |--------------------|------------------------------------|------------------------------------------------|
-| `ZIPREPORT_API_KEY`| `apiServer.options.authTokenSecret`| API authentication key. Takes precedence over config file. |
+| `ZIPREPORT_API_KEY`| `apiServer.authTokenSecret`| API authentication key. Takes precedence over config file. |
 
 Example:
 ```shell
@@ -33,8 +33,9 @@ Configuration for the HTTP API server that handles rendering requests.
 | `readTimeout`                    | integer | `600`                     | Maximum duration in seconds for reading the entire request, including the body.                |
 | `writeTimeout`                   | integer | `600`                     | Maximum duration in seconds for writing the response.                                          |
 | `debug`                          | boolean | `false`                   | Enable debug mode for additional logging and diagnostic information.                           |
-| `options.authTokenSecret`        | string  | `"my-super-secret-token"` | Secret key used for authentication token generation and validation. Change this in production. |
-| `options.defaultSecurityHeaders` | string  | `"1"`                     | Enable default security headers in HTTP responses. Set to "1" to enable.                       |
+| `authTokenHeader`                | string  | `"X-Auth-Key"`            | HTTP header that carries the authentication token.                                             |
+| `authTokenSecret`                | string  | `"my-super-secret-token"` | Secret key used for authentication token validation. Change this in production.                |
+| `defaultSecurityHeaders`         | boolean | `true`                    | Enable default security headers in HTTP responses.                                             |
 | `trustedProxies`                 | array   | `[]`                      | List of trusted proxy IP addresses or CIDR ranges for X-Forwarded-For header processing.       |
 | `tlsEnable`                      | boolean | `false`                   | Enable TLS/HTTPS for the API server.                                                           |
 | `tlsCert`                        | string  | `""`                      | Path to TLS certificate file (PEM format).                                                     |
@@ -117,9 +118,7 @@ Configuration for application logging.
   "apiServer": {
     "host": "0.0.0.0",
     "port": 6543,
-    "options": {
-      "authTokenSecret": "your-secure-random-token-here"
-    }
+    "authTokenSecret": "your-secure-random-token-here"
   },
   "zipReport": {
     "concurrency": 4
@@ -142,9 +141,7 @@ Configuration for application logging.
     "tlsCert": "/path/to/cert.pem",
     "tlsKey": "/path/to/key.pem",
     "tlsMinVersion": "1.2",
-    "options": {
-      "authTokenSecret": "your-secure-random-token-here"
-    }
+    "authTokenSecret": "your-secure-random-token-here"
   }
 }
 ```
@@ -191,7 +188,7 @@ Configuration for application logging.
 
 ## Security Considerations
 
-1. **Authentication Secret**: Always change `apiServer.options.authTokenSecret` from the default value in production
+1. **Authentication Secret**: Always change `apiServer.authTokenSecret` from the default value in production
    environments. Use a strong, randomly generated secret.
 
 2. **TLS Certificates**: When enabling TLS, ensure certificates are properly secured with appropriate file permissions (

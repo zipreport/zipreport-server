@@ -49,11 +49,9 @@ Version 2.3.0 introduced a complete configuration system overhaul. The server no
     "tlsEnable": true,
     "tlsCert": "/path/to/cert.pem",
     "tlsKey": "/path/to/key.pem",
-    "options": {
-      "authTokenHeader": "X-Auth-Key",
-      "authTokenSecret": "your-secret-key",
-      "defaultSecurityHeaders": "1"
-    }
+    "authTokenHeader": "X-Auth-Key",
+    "authTokenSecret": "your-secret-key",
+    "defaultSecurityHeaders": true
   },
   "zipReport": {
     "enableConsoleLogging": false,
@@ -75,7 +73,7 @@ Here's how the old command-line arguments map to the new configuration file:
 |------------------|-----------------------------------------|--------------------------------------------|
 | `-addr`          | `apiServer.host`                        |                                            |
 | `-port`          | `apiServer.port`                        |                                            |
-| `-apikey`        | `apiServer.options.authTokenSecret`     |                                            |
+| `-apikey`        | `apiServer.authTokenSecret`             |                                            |
 | `-certkey`       | `apiServer.tlsKey`                      |                                            |
 | `-certificate`   | `apiServer.tlsCert`                     |                                            |
 | `-httprt`        | `apiServer.readTimeout`                 |                                            |
@@ -86,8 +84,8 @@ Here's how the old command-line arguments map to the new configuration file:
 | `-concurrency`   | `zipReport.concurrency`                 |                                            |
 | `-baseport`      | `zipReport.baseHttpPort`                |                                            |
 | `-loglevel`      | `log.level`                             | Now uses string: "debug", "info", "error" |
-| (new)            | `apiServer.options.authTokenHeader`     | New in 2.3.0: "X-Auth-Key"                 |
-| (new)            | `apiServer.options.defaultSecurityHeaders` | New: "1" to enable                      |
+| (new)            | `apiServer.authTokenHeader`             | "X-Auth-Key"                               |
+| (new)            | `apiServer.defaultSecurityHeaders`      | boolean, `true` to enable                  |
 
 ### Migration Steps
 
@@ -104,11 +102,9 @@ Create a new file `config/config.json` based on your current command-line argume
   "apiServer": {
     "host": "0.0.0.0",
     "port": 6543,
-    "options": {
-      "authTokenHeader": "X-Auth-Key",
-      "authTokenSecret": "my-secret",
-      "defaultSecurityHeaders": "1"
-    }
+    "authTokenHeader": "X-Auth-Key",
+    "authTokenSecret": "my-secret",
+    "defaultSecurityHeaders": true
   },
   "zipReport": {
     "concurrency": 4
@@ -286,9 +282,7 @@ Your existing configuration files will continue to work without modification. Ho
    ```json
    {
      "apiServer": {
-       "options": {
-         "authTokenSecret": "your-secure-token-here"
-       }
+       "authTokenSecret": "your-secure-token-here"
      }
    }
    ```

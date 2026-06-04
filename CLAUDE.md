@@ -77,7 +77,7 @@ minimal config, `config/config.complete.json` for all options.
 Key runtime settings in `zipReport`: `concurrency` (pool size), `baseHttpPort` (ephemeral server range start),
 `enableConsoleLogging`, `enableMetrics`.
 
-**Environment Variable Override**: `ZIPREPORT_API_KEY` overrides `apiServer.options.authTokenSecret`, useful for Docker
+**Environment Variable Override**: `ZIPREPORT_API_KEY` overrides `apiServer.authTokenSecret`, useful for Docker
 deployments without a config file mount.
 
 ### Test Structure
