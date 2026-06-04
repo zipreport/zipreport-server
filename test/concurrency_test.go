@@ -34,14 +34,14 @@ func setupConcurrentServer(t *testing.T, concurrency int) (*httpserver.Server, *
 
 	engine := render.NewEngine(ctx, concurrency, portBase, metrics, logger)
 
-	cfg := httpserver.NewServerConfig()
+	cfg := &apiserver.ApiServerConfig{
+		ServerConfig:           *httpserver.NewServerConfig(),
+		AuthTokenHeader:        "X-Auth-Key",
+		AuthTokenSecret:        testAuthToken,
+		DefaultSecurityHeaders: true,
+	}
 	cfg.Host = "localhost"
 	cfg.Port = 0
-	cfg.Options = map[string]string{
-		httpserver.OptDefaultSecurityHeaders: "1",
-		httpserver.OptAuthTokenHeader:        "X-Auth-Key",
-		httpserver.OptAuthTokenSecret:        testAuthToken,
-	}
 
 	srv, err := apiserver.NewApiServer(cfg, engine, metrics, logger)
 	require.NoError(t, err)

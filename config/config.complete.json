@@ -5,10 +5,9 @@
     "readTimeout": 600,
     "writeTimeout": 600,
     "debug": false,
-    "options": {
-      "authTokenSecret": "my-super-secret-token",
-      "defaultSecurityHeaders": "1"
-    },
+    "authTokenHeader": "X-Auth-Key",
+    "authTokenSecret": "my-super-secret-token",
+    "defaultSecurityHeaders": true,
     "trustedProxies": [],
     "tlsCert": "",
     "tlsKey": "",

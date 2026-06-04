@@ -67,6 +67,11 @@ func (z *ZipReport) Build(appName string) {
 	if cfg.ZipReport.EnableHttpDebugging {
 		zptEngine.EnableHttpDebugging()
 	}
+	// register engine destructor to release browsers and ephemeral servers on shutdown
+	blueprint.RegisterDestructor(func() error {
+		zptEngine.Shutdown()
+		return nil
+	})
 
 	// initialize Prometheus Endpoint
 	if cfg.ZipReport.EnableMetrics {
@@ -74,6 +79,13 @@ func (z *ZipReport) Build(appName string) {
 
 		prom, err := cfg.Prometheus.NewServer(z.logger)
 		z.AbortFatal(err)
+
+		// start the metrics endpoint (blocking call, so run in background)
+		go func() {
+			if err := prom.Start(); err != nil {
+				z.logger.Error(err, "prometheus metrics server failed")
+			}
+		}()
 
 		// register prometheus destructor
 		blueprint.RegisterDestructor(func() error {
