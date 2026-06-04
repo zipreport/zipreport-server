@@ -101,7 +101,7 @@ jobs:
           output-file: bom-spdx.json
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-docker-${{ github.sha }}
           path: |
