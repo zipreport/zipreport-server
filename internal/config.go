@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/metrics"
 	"zipreport-server/pkg/render"
 
@@ -28,10 +29,10 @@ type ZipReportConfig struct {
 }
 
 type Config struct {
-	ApiServer  *httpserver.ServerConfig  `json:"apiServer"`
-	Prometheus *metrics.PrometheusConfig `json:"prometheus"`
-	ZipReport  *ZipReportConfig          `json:"zipReport"`
-	Logging    *log.Config               `json:"log"`
+	ApiServer  *apiserver.ApiServerConfig `json:"apiServer"`
+	Prometheus *metrics.PrometheusConfig  `json:"prometheus"`
+	ZipReport  *ZipReportConfig           `json:"zipReport"`
+	Logging    *log.Config                `json:"log"`
 }
 
 func NewZipReportConfig() *ZipReportConfig {
@@ -70,17 +71,15 @@ func NewConfig() *Config {
 	}
 }
 
-func apiServerConfig() *httpserver.ServerConfig {
-	result := httpserver.NewServerConfig()
-	result.Port = DefaultPort
-
-	// enable default security headers
-	result.Options[httpserver.OptDefaultSecurityHeaders] = "1"
-
-	// token-based authentication
-	result.Options[httpserver.OptAuthTokenHeader] = "X-Auth-Key"
-	result.Options[httpserver.OptAuthTokenSecret] = "my-super-secret-token"
-	return result
+func apiServerConfig() *apiserver.ApiServerConfig {
+	sc := httpserver.NewServerConfig()
+	sc.Port = DefaultPort
+	return &apiserver.ApiServerConfig{
+		ServerConfig:           *sc,
+		AuthTokenHeader:        "X-Auth-Key",
+		AuthTokenSecret:        "my-super-secret-token",
+		DefaultSecurityHeaders: true,
+	}
 }
 
 func (c *Config) Validate() error {
@@ -91,8 +90,8 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// validate if auth is enabled
-	if v, ok := c.ApiServer.Options[httpserver.OptAuthTokenSecret]; !ok || len(v) == 0 {
+	// validate auth secret is set
+	if len(c.ApiServer.AuthTokenSecret) == 0 {
 		return errors.New("authTokenSecret option cannot be empty")
 	}
 
@@ -125,7 +124,7 @@ func (c *Config) Validate() error {
 //   - ZIPREPORT_API_KEY: overrides apiServer.options.authTokenSecret
 func (c *Config) ApplyEnvOverrides() {
 	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
-		c.ApiServer.Options[httpserver.OptAuthTokenSecret] = apiKey
+		c.ApiServer.AuthTokenSecret = apiKey
 	}
 }
 

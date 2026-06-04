@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated Go toolchain from 1.24.12 to 1.26.3
+- Updated all Go module dependencies to their latest versions (gin, rod, prometheus, redis, quic-go, zerolog, blueprint, golang.org/x/*, etc.)
+- Migrated `blueprint/provider/httpserver` to v0.9.x: auth and security-header options moved out of the server `Options` map. The `apiServer.options` config block is replaced by `apiServer.authTokenHeader`, `apiServer.authTokenSecret`, and `apiServer.defaultSecurityHeaders` (config-file breaking change)
 - Upgraded Docker base image from Ubuntu 22.04 (Jammy) to 26.04 (Resolute)
 - Added `apt-get upgrade` to Dockerfile to apply all available OS security patches at build time
 - Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)

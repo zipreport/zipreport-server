@@ -17,6 +17,16 @@ const (
 	DefaultPort         = 6543
 )
 
+// ApiServerConfig holds the HTTP server settings plus token-auth and
+// security-header options. The httpserver provider no longer carries these in
+// an Options map, so they are configured here and applied in NewApiServer.
+type ApiServerConfig struct {
+	httpserver.ServerConfig
+	AuthTokenHeader        string `json:"authTokenHeader"`
+	AuthTokenSecret        string `json:"authTokenSecret"`
+	DefaultSecurityHeaders bool   `json:"defaultSecurityHeaders"`
+}
+
 // constantTimeToken is an auth.Provider that compares the token header against
 // the configured secret in constant time, avoiding the timing side-channel of
 // the framework's default string comparison.
@@ -33,30 +43,25 @@ func (a constantTimeToken) CanAccess(c *gin.Context) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(a.key)) == 1
 }
 
-func NewApiServer(cfg *httpserver.ServerConfig, engine *render.Engine, metrics *monitor.Metrics, logger *log.Logger) (*httpserver.Server, error) {
-	srv, err := cfg.NewServer(logger)
+func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.Metrics, logger *log.Logger) (*httpserver.Server, error) {
+	srv, err := httpserver.NewServer(&cfg.ServerConfig, logger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Capture the token config and remove the secret so ProcessOptions does not
-	// install the framework's non-constant-time token auth; we register our own.
-	header := cfg.Options[httpserver.OptAuthTokenHeader]
+	if cfg.DefaultSecurityHeaders {
+		srv.UseDefaultSecurityHeaders()
+	}
+
+	header := cfg.AuthTokenHeader
 	if header == "" {
 		header = auth.DefaultTokenAuthHeader
 	}
-	secret := cfg.Options[httpserver.OptAuthTokenSecret]
-	delete(cfg.Options, httpserver.OptAuthTokenSecret)
-
-	// enable security headers
-	if err = srv.ProcessOptions(); err != nil {
-		return nil, err
-	}
-	if secret != "" {
-		srv.UseAuth(constantTimeToken{header: header, key: secret})
+	if cfg.AuthTokenSecret != "" {
+		srv.UseAuth(constantTimeToken{header: header, key: cfg.AuthTokenSecret})
 	}
 
-	v := srv.Router.Group("v2")
+	v := srv.Group("v2")
 	{
 		v.POST("/render", func(g *gin.Context) {
 			renderAction(g, engine, metrics)
