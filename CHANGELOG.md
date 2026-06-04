@@ -17,10 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated `golangci-lint-action` from v6 to v9 (golangci-lint v2 with Go 1.26 support)
 
 ### Fixed
+- Browser pool permanently leaked a slot on every browser/connection error, eventually hanging the server after `concurrency` failures; failed slots are now returned to the pool
+- Prometheus metrics endpoint was created but never started when `enableMetrics` was enabled
+- Render engine (browser pool, ephemeral servers, shared Chrome) was never shut down on exit; now registered as a destructor
+- In shared no-sandbox mode, a single failed render could close the shared Chrome for all concurrent jobs; the shared browser is no longer closed on discard and is relaunched if it dies
+- HTTP file server now matches on the decoded URL path instead of the raw request URI, so query strings on asset URLs no longer break lookups
+- Removed unused/uninitialized metrics fields and wired the `current_browsers` gauge
+- Default `IgnoreSSLErrors` for a new job aligned to `false` (matching the API default)
+- Unknown file extensions now serve `application/octet-stream` instead of an empty `Content-Type`
 - Unchecked error returns flagged by golangci-lint v2 `errcheck` across `cmd/`, `pkg/browser/`, `pkg/render/`, `pkg/zpt/`, and test files
 - `staticcheck` QF1003: converted `runtime.GOOS` if/else chain to tagged switch in `pkg/browser/browser.go`
 
 ### Security
+- Capped decompressed zip-entry size and request body size (128 MiB each) to prevent zip-bomb and oversized-upload denial of service
+- Bounded client-supplied render timeouts and settling time to prevent a client from holding a pool slot indefinitely
+- API auth token is now compared in constant time
 - Added Trivy container image vulnerability scanning to Docker workflow (fails build on fixable CRITICAL OS-level CVEs)
 - Added Trivy SARIF upload to GitHub Security tab
 - Added `security-events: write` permission for codeql-action

@@ -6,15 +6,12 @@ import (
 )
 
 type Metrics struct {
-	ApiTotalRequests   prometheus.Counter
-	ApiSuccessRequests prometheus.Counter
-	ApiErrorRequests   prometheus.Counter
-	HttpServers        prometheus.Gauge
-	Browsers           prometheus.Gauge
-	TotalOps           prometheus.Counter
-	SuccessOps         prometheus.Counter
-	FailedOps          prometheus.Counter
-	ConversionTime     prometheus.Histogram
+	HttpServers    prometheus.Gauge
+	Browsers       prometheus.Gauge
+	TotalOps       prometheus.Counter
+	SuccessOps     prometheus.Counter
+	FailedOps      prometheus.Counter
+	ConversionTime prometheus.Histogram
 }
 
 func NewMetrics() *Metrics {

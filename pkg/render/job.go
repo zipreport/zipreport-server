@@ -26,6 +26,12 @@ const JobDefaultTimeout = 120
 const JobDefaultJsTimeout = 30
 const JobDefaultSettlingTime = 200
 
+// Upper bounds for client-supplied timing values, to prevent a client from
+// holding a pool slot indefinitely.
+const JobMaxTimeout = 600        // seconds
+const JobMaxJsTimeout = 300      // seconds
+const JobMaxSettlingTime = 30000 // milliseconds
+
 type Job struct {
 	Id                uuid.UUID
 	Zpt               *zpt.ZptReader
@@ -70,7 +76,7 @@ func NewRenderJob(z *zpt.ZptReader, id uuid.UUID) *Job {
 		JobTimeoutS:       JobDefaultTimeout,
 		JsTimeoutS:        JobDefaultJsTimeout,
 		UseJSEvent:        false,
-		IgnoreSSLErrors:   true,
+		IgnoreSSLErrors:   false,
 	}
 }
 

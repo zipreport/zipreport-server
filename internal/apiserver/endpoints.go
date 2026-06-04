@@ -11,7 +11,14 @@ import (
 	httplog "github.com/oddbit-project/blueprint/provider/httpserver/log"
 )
 
+// MaxUploadBytes caps the size of a render request body to bound memory/disk
+// usage from oversized or malicious uploads.
+const MaxUploadBytes = 128 << 20 // 128 MiB
+
 func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
+	// cap request body size
+	g.Request.Body = http.MaxBytesReader(g.Writer, g.Request.Body, MaxUploadBytes)
+
 	// validate requestId
 	// Note: reqId may be supplied as an external header, make sure it is not abused
 	reqId, err := uuid.Parse(g.GetHeader(httplog.HeaderRequestID))
