@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 15
     env:
       DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}
+      DTRACK_HOST: ${{ secrets.DTRACK_HOST }}
 
     steps:
       - name: Checkout repository
@@ -43,12 +44,12 @@ jobs:
         run: cyclonedx-gomod mod -licenses -output sbom-cyclonedx.json
 
       - name: Upload SBOM to Dependency-Track
-        if: ${{ env.DTRACK_API_KEY != '' }}
+        if: ${{ env.DTRACK_API_KEY != '' && env.DTRACK_HOST != '' }}
         env:
           PROJECT_NAME: ${{ github.event.repository.name }}
           PROJECT_VERSION: ${{ github.ref_name }}
         run: |
-          curl -sSf -X POST "https://dtrack.blackshield.dev/api/v1/bom" \
+          curl -sSf -X POST "https://${DTRACK_HOST}/api/v1/bom" \
             -H "X-Api-Key: ${DTRACK_API_KEY}" \
             -F "autoCreate=true" \
             -F "projectName=${PROJECT_NAME}" \
