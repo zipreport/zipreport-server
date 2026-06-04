@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Restructured GitHub Actions to the shared Go layout: CI split into `lint`/`test`/`build`/`govulncheck` jobs (plus the existing Docker build/e2e) gated by a `ci-success` job; the Go version is now pinned via `go-version-file: go.mod` instead of a hardcoded value
+- Added `pr.yml` (verifies `go.mod`/`go.sum` are tidy), `release.yml` (tag `v*` → GitHub release with generated notes), `sbom.yml` (CycloneDX + SPDX SBOMs on release, scanned with Grype, signed with Cosign, uploaded to the release and Dependency-Track), and `dependabot.yml` (Go modules + GitHub Actions)
+
 ### Security
 - Bumped Go toolchain from 1.26.3 to 1.26.4 to resolve standard-library advisories GO-2026-5037 (`crypto/x509`) and GO-2026-5039 (`net/textproto`)
 

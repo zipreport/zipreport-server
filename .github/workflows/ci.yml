@@ -13,16 +13,48 @@ on:
       - master
 
 jobs:
-  test:
+  lint:
+    name: Lint
     runs-on: ubuntu-24.04
-
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v6
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -s -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not formatted (run 'make fmt'):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
 
       - name: Download dependencies
         run: go mod download
@@ -30,60 +62,52 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Run go fmt
-        run: |
-          if [ -n "$(gofmt -s -l .)" ]; then
-            echo "Go code is not formatted:"
-            gofmt -s -d .
-            exit 1
-          fi
+      - name: Run tests
+        run: make test-integration
+        timeout-minutes: 10
 
-      - name: Run go vet
-        run: go vet ./...
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    needs: [ test, lint ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          version: latest
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: make build
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
 
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      - name: Build
-        run: make build
-
-      - name: Run tests
-        run: make test-integration
-        timeout-minutes: 10
-
-      - name: Generate SBOM (CycloneDX)
-        run: |
-          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
-          cyclonedx-gomod mod -licenses -json -output bom-cyclonedx.json
-
-      - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@v0.24.0
-        with:
-          format: spdx-json
-          output-file: bom-spdx.json
-
-      - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: sbom-files
-          path: |
-            bom-cyclonedx.json
-            bom-spdx.json
-          retention-days: 90
-
   build-docker:
+    name: Docker Build (multi-platform)
     runs-on: ubuntu-24.04
     needs: test
-
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v6
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -104,11 +128,12 @@ jobs:
           cache-to: type=gha,mode=max
 
   e2e-docker:
+    name: Docker E2E
     runs-on: ubuntu-24.04
     needs: build-docker
-
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v6
 
       - name: Build Docker image
         run: docker build -t zipreport-server:e2e .
@@ -155,3 +180,18 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f zipreport-e2e
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-24.04
+    needs: [ test, lint, build, govulncheck, build-docker, e2e-docker ]
+    if: always()
+    steps:
+      - name: Verify all jobs passed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more required jobs failed."
+          exit 1
+
+      - name: Success
+        run: echo "All CI jobs passed."
