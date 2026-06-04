@@ -1,6 +1,8 @@
 package test
 
 import (
+	"archive/zip"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,8 +68,8 @@ func TestZptServer_PathTraversal(t *testing.T) {
 		{
 			name:           "encoded_traversal",
 			requestURI:     "/%2e%2e/etc/passwd",
-			expectedStatus: http.StatusNotFound,
-			description:    "URL encoded traversal results in not found",
+			expectedStatus: http.StatusForbidden,
+			description:    "URL encoded traversal is decoded and blocked",
 		},
 		{
 			name:           "backslash_traversal",
@@ -101,10 +103,8 @@ func TestZptServer_PathTraversal(t *testing.T) {
 	}
 }
 
-// TestZptReader_LargeFileProtection tests protection against large files in zip
+// TestZptReader_LargeFileProtection tests protection against zip-bomb entries
 func TestZptReader_LargeFileProtection(t *testing.T) {
-	// This test would require creating a test zip with a large file
-	// For now, we test normal file reading succeeds
 	reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")
 	require.NoError(t, err)
 
@@ -116,6 +116,34 @@ func TestZptReader_LargeFileProtection(t *testing.T) {
 	// Try to read a non-existent file
 	_, err = reader.ReadFile("nonexistent.html")
 	assert.Error(t, err)
+
+	// An entry that decompresses beyond MaxFileSize must be rejected
+	bomb := buildZip(t, "bomb.bin", make([]byte, zpt.MaxFileSize+1))
+	bombReader, err := zpt.NewZptReader(bytes.NewReader(bomb), int64(len(bomb)))
+	require.NoError(t, err)
+	_, err = bombReader.ReadFile("bomb.bin")
+	assert.Error(t, err, "oversized entry should be rejected")
+
+	// An entry within the limit must still read
+	small := buildZip(t, "ok.bin", make([]byte, 1024))
+	okReader, err := zpt.NewZptReader(bytes.NewReader(small), int64(len(small)))
+	require.NoError(t, err)
+	got, err := okReader.ReadFile("ok.bin")
+	require.NoError(t, err)
+	assert.Equal(t, 1024, len(got))
+}
+
+// buildZip returns an in-memory zip archive containing a single named entry.
+func buildZip(t *testing.T, name string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	require.NoError(t, err)
+	_, err = w.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
 }
 
 // TestRenderTimeout tests that render jobs respect timeouts

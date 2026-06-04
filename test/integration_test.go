@@ -50,14 +50,14 @@ func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.
 	engine := render.NewEngine(ctx, 1, portBase, metrics, logger)
 
 	// Configure API server
-	cfg := httpserver.NewServerConfig()
+	cfg := &apiserver.ApiServerConfig{
+		ServerConfig:           *httpserver.NewServerConfig(),
+		AuthTokenHeader:        "X-Auth-Key",
+		AuthTokenSecret:        testAuthToken,
+		DefaultSecurityHeaders: true,
+	}
 	cfg.Host = "localhost"
 	cfg.Port = 0 // Let OS assign port
-	cfg.Options = map[string]string{
-		httpserver.OptDefaultSecurityHeaders: "1",
-		httpserver.OptAuthTokenHeader:        "X-Auth-Key",
-		httpserver.OptAuthTokenSecret:        testAuthToken,
-	}
 
 	srv, err := apiserver.NewApiServer(cfg, engine, metrics, logger)
 	require.NoError(t, err)

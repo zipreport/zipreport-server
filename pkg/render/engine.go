@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"zipreport-server/pkg/browser"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
 
@@ -30,6 +31,7 @@ type Engine struct {
 	httpDebug      bool
 	consoleLogging bool
 	launcherURL    string          // Shared launcher URL for no-sandbox mode
+	launcherMx     sync.Mutex      // Guards launcherURL during relaunch
 	ctx            context.Context // Application-level context for pooled browsers
 }
 
@@ -43,6 +45,11 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 	if needsNoSandbox() {
 		logger.Info("Detected CI/Docker environment, launching Chrome with --no-sandbox")
 		l := launcher.New().NoSandbox(true)
+		if browser.IsInstalled() {
+			// Pin the pre-installed binary so rod skips its Validate() probe,
+			// which otherwise deletes and re-downloads Chromium at runtime.
+			l = l.Bin(browser.BinPath())
+		}
 		launcherURL = l.MustLaunch()
 	}
 
@@ -94,6 +101,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 	browser, err := e.GetBrowser()
 	if err != nil {
+		// Get() consumed a pool slot even though creation failed; return an
+		// empty slot so the pool capacity is not permanently reduced.
+		e.BrowserPool.Put(nil)
 		e.logger.Error(err, "could not fetch browser instance", log.KV{"id": jobId})
 		return &JobResult{
 			ElapsedTime: 0,
@@ -107,10 +117,19 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	defer func() {
 		if browserOK {
 			e.BrowserPool.Put(browser)
-		} else {
-			e.logger.Warn("discarding broken browser instance", log.KV{"id": jobId})
+			return
+		}
+		e.logger.Warn("discarding broken browser instance", log.KV{"id": jobId})
+		e.metrics.Browsers.Dec()
+		// In shared-launcher mode every pooled browser is a connection to the
+		// same Chrome process; closing it would terminate rendering for all
+		// concurrent jobs. Drop the connection instead. In dedicated mode each
+		// browser is its own process, so close it to release resources.
+		if e.launcherURL == "" {
 			_ = browser.Close()
 		}
+		// Return an empty slot so a fresh browser is created on the next Get.
+		e.BrowserPool.Put(nil)
 	}()
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
@@ -297,22 +316,65 @@ func (e *Engine) logConsoleArgs(page *rod.Page, args []*proto.RuntimeRemoteObjec
 }
 
 func (e *Engine) GetBrowser() (*rod.Browser, error) {
-	return e.BrowserPool.Get(func() (*rod.Browser, error) {
-		var browser *rod.Browser
-		if e.launcherURL != "" {
-			// Use shared launcher with --no-sandbox
-			browser = rod.New().ControlURL(e.launcherURL).Context(e.ctx)
-		} else {
-			// Normal launch with sandbox
-			browser = rod.New().Context(e.ctx)
-		}
+	return e.BrowserPool.Get(e.connectBrowser)
+}
 
-		err := browser.Connect()
-		if err != nil {
+// connectBrowser establishes a browser connection. In shared-launcher mode it
+// reconnects to the shared Chrome, relaunching it once if the process has died.
+func (e *Engine) connectBrowser() (*rod.Browser, error) {
+	if e.launcherURL == "" {
+		// Dedicated launch with sandbox
+		b := rod.New().Context(e.ctx)
+		if err := b.Connect(); err != nil {
 			return nil, err
 		}
-		return browser, nil
-	})
+		e.metrics.Browsers.Inc()
+		return b, nil
+	}
+
+	e.launcherMx.Lock()
+	url := e.launcherURL
+	e.launcherMx.Unlock()
+
+	b := rod.New().ControlURL(url).Context(e.ctx)
+	if err := b.Connect(); err == nil {
+		e.metrics.Browsers.Inc()
+		return b, nil
+	}
+
+	// The shared Chrome may have died; relaunch it once and retry.
+	url, err := e.relaunchSharedBrowser(url)
+	if err != nil {
+		return nil, err
+	}
+	b = rod.New().ControlURL(url).Context(e.ctx)
+	if err := b.Connect(); err != nil {
+		return nil, err
+	}
+	e.metrics.Browsers.Inc()
+	return b, nil
+}
+
+// relaunchSharedBrowser relaunches the shared no-sandbox Chrome, unless another
+// goroutine already relaunched it since prevURL was observed (single-flight).
+func (e *Engine) relaunchSharedBrowser(prevURL string) (string, error) {
+	e.launcherMx.Lock()
+	defer e.launcherMx.Unlock()
+	if e.launcherURL != prevURL {
+		return e.launcherURL, nil
+	}
+	l := launcher.New().NoSandbox(true)
+	if browser.IsInstalled() {
+		l = l.Bin(browser.BinPath())
+	}
+	url, err := l.Launch()
+	if err != nil {
+		e.logger.Error(err, "failed to relaunch shared browser")
+		return "", err
+	}
+	e.logger.Warn("relaunched shared browser instance")
+	e.launcherURL = url
+	return url, nil
 }
 
 // needsNoSandbox checks if Chrome sandbox should be disabled
@@ -331,6 +393,7 @@ func needsNoSandbox() bool {
 func (e *Engine) Shutdown() {
 	e.logger.Info("Shutting down render.Engine...")
 	e.BrowserPool.Cleanup(func(p *rod.Browser) {
+		e.metrics.Browsers.Dec()
 		// In shared-launcher mode, the first Close() kills Chrome and
 		// subsequent calls fail; use non-panicking Close to handle this.
 		_ = p.Close()

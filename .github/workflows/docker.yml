@@ -11,9 +11,9 @@ on:
       - main
       - master
 
-  # rebuild weekly to pick up base image and dependency security patches
+  # rebuild daily to pick up base image and dependency security patches
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 6 * * *'
 
   workflow_dispatch:
 

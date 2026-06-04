@@ -2,9 +2,14 @@ package zpt
 
 import (
 	"archive/zip"
+	"fmt"
 	"io"
 	"os"
 )
+
+// MaxFileSize caps the decompressed size of a single zip entry, guarding
+// against zip-bomb entries that would otherwise exhaust memory.
+const MaxFileSize = 128 << 20 // 128 MiB
 
 type ZptReader struct {
 	Reader *zip.Reader
@@ -30,7 +35,15 @@ func (z *ZptReader) ReadFile(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return io.ReadAll(f)
+	// Read at most MaxFileSize+1 so an oversized entry can be detected.
+	buf, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) > MaxFileSize {
+		return nil, fmt.Errorf("file %q exceeds maximum decompressed size of %d bytes", name, MaxFileSize)
+	}
+	return buf, nil
 }
 
 func (z *ZptReader) Destroy() {

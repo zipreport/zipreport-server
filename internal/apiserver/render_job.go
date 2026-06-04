@@ -70,6 +70,16 @@ func optionalBoolValue(ctx *gin.Context, name string, defaultValue bool) bool {
 	return b
 }
 
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 func strFloatValue(ctx *gin.Context, name string, defaultValue float64) (float64, error) {
 	if v, exists := ctx.GetPostForm(name); !exists {
 		return defaultValue, nil
@@ -131,9 +141,9 @@ func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, error) {
 	}
 
 	job.Landscape = optionalBoolValue(c, ParamLandscape, false)
-	job.JobSettlingTimeMs = optionalIntValue(c, ParamSettlingTime, render.JobDefaultSettlingTime)
-	job.JobTimeoutS = optionalIntValue(c, ParamJobTimeout, render.JobDefaultTimeout)
-	job.JsTimeoutS = optionalIntValue(c, ParamJsTimeout, render.JobDefaultJsTimeout)
+	job.JobSettlingTimeMs = clampInt(optionalIntValue(c, ParamSettlingTime, render.JobDefaultSettlingTime), 0, render.JobMaxSettlingTime)
+	job.JobTimeoutS = clampInt(optionalIntValue(c, ParamJobTimeout, render.JobDefaultTimeout), 1, render.JobMaxTimeout)
+	job.JsTimeoutS = clampInt(optionalIntValue(c, ParamJsTimeout, render.JobDefaultJsTimeout), 1, render.JobMaxJsTimeout)
 	job.UseJSEvent = optionalBoolValue(c, ParamJsEvent, false)
 	job.IgnoreSSLErrors = optionalBoolValue(c, IgnoreSslErr, false)
 
