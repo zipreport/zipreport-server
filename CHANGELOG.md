@@ -5,36 +5,45 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.2]
+## [2.4.0]
 
 ### Changed
-- Updated Go toolchain from 1.24.12 to 1.26.3
-- Updated all Go module dependencies to their latest versions (gin, rod, prometheus, redis, quic-go, zerolog, blueprint, golang.org/x/*, etc.)
-- Migrated `blueprint/provider/httpserver` to v0.9.x: auth and security-header options moved out of the server `Options` map. The `apiServer.options` config block is replaced by `apiServer.authTokenHeader`, `apiServer.authTokenSecret`, and `apiServer.defaultSecurityHeaders` (config-file breaking change)
-- Switched Docker runtime base image from Ubuntu to Wolfi (`cgr.dev/chainguard/wolfi-base`); Chrome runtime
-  dependencies are now installed via `apk` (requires `libudev` and Mozilla NSS via `libnss`)
+- Switched the Docker runtime base image from Ubuntu to Wolfi (`cgr.dev/chainguard/wolfi-base`); Chrome runtime dependencies are now installed via `apk` (notably `libudev`, required at startup, and Mozilla NSS via `libnss`)
 - Rebased `Dockerfile.test` onto Wolfi with the `go-1.26` toolchain to match the runtime environment
-- Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)
-- Replaced `CycloneDX/gh-gomod-generate-sbom` action with direct `cyclonedx-gomod` CLI (no Node.js 24 version available)
-- Replaced source-based SBOMs with image-based SBOMs in Docker workflow, capturing OS packages and runtime dependencies
-- Updated `golangci-lint-action` from v6 to v9 (golangci-lint v2 with Go 1.26 support)
+- Updated all Go module dependencies to their latest versions (gin, rod, prometheus, redis, quic-go, zerolog, blueprint, golang.org/x/*, etc.)
+- Migrated `blueprint/provider/httpserver` to v0.9.x. **Breaking config change**: the `apiServer.options` block is removed — set `apiServer.authTokenHeader`, `apiServer.authTokenSecret`, and `apiServer.defaultSecurityHeaders` (bool) at the `apiServer` level instead
+- Changed the scheduled Docker image rebuild from weekly to daily
 
 ### Fixed
 - Browser pool permanently leaked a slot on every browser/connection error, eventually hanging the server after `concurrency` failures; failed slots are now returned to the pool
 - Prometheus metrics endpoint was created but never started when `enableMetrics` was enabled
 - Render engine (browser pool, ephemeral servers, shared Chrome) was never shut down on exit; now registered as a destructor
 - In shared no-sandbox mode, a single failed render could close the shared Chrome for all concurrent jobs; the shared browser is no longer closed on discard and is relaunched if it dies
+- Pinned the pre-installed Chromium binary so rod no longer deletes and re-downloads it at runtime on the first render
 - HTTP file server now matches on the decoded URL path instead of the raw request URI, so query strings on asset URLs no longer break lookups
 - Removed unused/uninitialized metrics fields and wired the `current_browsers` gauge
 - Default `IgnoreSSLErrors` for a new job aligned to `false` (matching the API default)
 - Unknown file extensions now serve `application/octet-stream` instead of an empty `Content-Type`
-- Unchecked error returns flagged by golangci-lint v2 `errcheck` across `cmd/`, `pkg/browser/`, `pkg/render/`, `pkg/zpt/`, and test files
-- `staticcheck` QF1003: converted `runtime.GOOS` if/else chain to tagged switch in `pkg/browser/browser.go`
 
 ### Security
 - Capped decompressed zip-entry size and request body size (128 MiB each) to prevent zip-bomb and oversized-upload denial of service
 - Bounded client-supplied render timeouts and settling time to prevent a client from holding a pool slot indefinitely
 - API auth token is now compared in constant time
+
+## [2.3.2]
+
+### Changed
+- Updated Go toolchain from 1.24.12 to 1.26.3
+- Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)
+- Replaced `CycloneDX/gh-gomod-generate-sbom` action with direct `cyclonedx-gomod` CLI (no Node.js 24 version available)
+- Replaced source-based SBOMs with image-based SBOMs in Docker workflow, capturing OS packages and runtime dependencies
+- Updated `golangci-lint-action` from v6 to v9 (golangci-lint v2 with Go 1.26 support)
+
+### Fixed
+- Unchecked error returns flagged by golangci-lint v2 `errcheck` across `cmd/`, `pkg/browser/`, `pkg/render/`, `pkg/zpt/`, and test files
+- `staticcheck` QF1003: converted `runtime.GOOS` if/else chain to tagged switch in `pkg/browser/browser.go`
+
+### Security
 - Added Trivy container image vulnerability scanning to Docker workflow (fails build on fixable CRITICAL OS-level CVEs)
 - Added Trivy SARIF upload to GitHub Security tab
 - Added `security-events: write` permission for codeql-action
