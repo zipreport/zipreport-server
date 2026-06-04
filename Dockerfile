@@ -19,21 +19,39 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
     mkdir -p /app/config/ssl
 
-FROM ubuntu:26.04
+FROM cgr.dev/chainguard/wolfi-base
 
 LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 
-RUN apt-get update > /dev/null && \
-    apt-get upgrade -y > /dev/null && \
-    apt-get install --no-install-recommends -y \
-    libnss3 libxss1 libasound2t64 libxtst6 libgtk-3-0t64 libgbm1 \
-    ca-certificates \
-    fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
+# Wolfi is glibc-based, so the glibc Chromium build downloaded by browser-update runs unmodified.
+# shadow provides useradd; the rest are Chromium's runtime libraries. libudev is required or
+# Chrome aborts at startup (udev_loader.cc); libnss is Mozilla NSS (Wolfi's "nss" is glibc NSS).
+RUN apk add --no-cache \
+    shadow \
+    libnss \
+    libudev \
+    libxscrnsaver \
+    libxtst \
+    libxcomposite \
+    libxdamage \
+    libxrandr \
+    libxkbcommon \
+    libx11 \
+    libdrm \
+    mesa-gbm \
+    gtk-3 \
+    pango \
+    cups-libs \
+    at-spi2-core \
+    dbus-libs \
+    alsa-lib \
+    ca-certificates-bundle \
+    font-liberation \
+    font-noto-emoji \
+    font-noto-cjk \
     tzdata \
     dumb-init \
-    xvfb \
-    > /dev/null && \
-    rm -rf /var/lib/apt/lists/*
+    xvfb-run
 
 WORKDIR /app
 

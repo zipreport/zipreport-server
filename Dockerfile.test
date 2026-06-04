@@ -1,0 +1,47 @@
+FROM cgr.dev/chainguard/wolfi-base
+
+# Go toolchain + git for module fetches, plus Chromium runtime libraries.
+# Package set mirrors the runtime Dockerfile.
+RUN apk add --no-cache \
+    go-1.26 \
+    git \
+    libnss \
+    libudev \
+    libxscrnsaver \
+    libxtst \
+    libxcomposite \
+    libxdamage \
+    libxrandr \
+    libxkbcommon \
+    libx11 \
+    libdrm \
+    mesa-gbm \
+    gtk-3 \
+    pango \
+    cups-libs \
+    at-spi2-core \
+    dbus-libs \
+    alsa-lib \
+    ca-certificates-bundle \
+    font-liberation \
+    font-noto-emoji \
+    font-noto-cjk \
+    tzdata
+
+ENV PATH="/usr/lib/go-1.26/bin:${PATH}"
+
+WORKDIR /app
+
+# Cache dependency downloads
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build browser-update to fetch Chrome
+COPY . .
+RUN go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
+    ./browser-update
+
+# Mark as Docker environment for --no-sandbox detection
+RUN touch /.dockerenv
+
+CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/..."]

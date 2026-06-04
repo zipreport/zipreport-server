@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated Go toolchain from 1.24.12 to 1.26.3
-- Upgraded Docker base image from Ubuntu 22.04 (Jammy) to 26.04 (Resolute)
-- Added `apt-get upgrade` to Dockerfile to apply all available OS security patches at build time
+- Switched Docker runtime base image from Ubuntu to Wolfi (`cgr.dev/chainguard/wolfi-base`); Chrome runtime
+  dependencies are now installed via `apk` (requires `libudev` and Mozilla NSS via `libnss`)
+- Rebased `Dockerfile.test` onto Wolfi with the `go-1.26` toolchain to match the runtime environment
 - Updated all GitHub Actions to Node.js 24 compatible versions (checkout v6, setup-go v6, build-push-action v7, etc.)
 - Replaced `CycloneDX/gh-gomod-generate-sbom` action with direct `cyclonedx-gomod` CLI (no Node.js 24 version available)
 - Replaced source-based SBOMs with image-based SBOMs in Docker workflow, capturing OS packages and runtime dependencies

@@ -96,9 +96,12 @@ counter to prevent conflicts.
 
 ### Docker Environment
 
-The production Dockerfile uses a two-stage build: Go builder → Ubuntu runtime with Chrome dependencies. Chrome sandbox
-is disabled inside containers (detected via `/.dockerenv` file). The `browser-update` tool downloads the correct
-Chromium version at build time.
+The production Dockerfile uses a two-stage build: Go builder → Wolfi (`cgr.dev/chainguard/wolfi-base`) runtime with
+Chrome dependencies. Wolfi is glibc-based, so the glibc Chromium that `browser-update` downloads runs unmodified.
+Chrome runtime libs are pulled via `apk` (notably `libudev`, without which Chrome aborts at startup, and `libnss` for
+Mozilla NSS — Wolfi's `nss` package is glibc Name Service Switch, not NSS). Chrome sandbox is disabled inside
+containers (detected via `/.dockerenv` file). The `browser-update` tool downloads the correct Chromium version at
+build time.
 
 **Multi-platform support**: Docker images are built for `linux/amd64` and `linux/arm64`. The builder stage uses
 `--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chromium
