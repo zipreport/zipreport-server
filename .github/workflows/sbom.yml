@@ -1,0 +1,80 @@
+name: Generate SBOMs and Scan
+
+on:
+  release:
+    types: [ published ]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sbom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install cyclonedx-gomod
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Install Syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install Grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-gomod mod -licenses -output sbom-cyclonedx.json
+
+      - name: Upload SBOM to Dependency-Track
+        if: ${{ env.DTRACK_API_KEY != '' }}
+        env:
+          PROJECT_NAME: ${{ github.event.repository.name }}
+          PROJECT_VERSION: ${{ github.ref_name }}
+        run: |
+          curl -sSf -X POST "https://dtrack.blackshield.dev/api/v1/bom" \
+            -H "X-Api-Key: ${DTRACK_API_KEY}" \
+            -F "autoCreate=true" \
+            -F "projectName=${PROJECT_NAME}" \
+            -F "projectVersion=${PROJECT_VERSION}" \
+            -F "bom=@sbom-cyclonedx.json"
+
+      - name: Generate SPDX SBOM
+        run: syft . -o spdx-json > sbom-spdx.json
+
+      - name: Scan CycloneDX SBOM
+        run: grype sbom:sbom-cyclonedx.json --fail-on high --output table
+
+      - name: Scan SPDX SBOM
+        run: grype sbom:sbom-spdx.json --fail-on high --output table
+
+      - name: Sign CycloneDX SBOM
+        run: cosign sign-blob --yes sbom-cyclonedx.json --output-signature sbom-cyclonedx.json.sig
+
+      - name: Sign SPDX SBOM
+        run: cosign sign-blob --yes sbom-spdx.json --output-signature sbom-spdx.json.sig
+
+      - name: Upload SBOMs to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            sbom-cyclonedx.json
+            sbom-cyclonedx.json.sig
+            sbom-spdx.json
+            sbom-spdx.json.sig
