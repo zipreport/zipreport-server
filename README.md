@@ -13,6 +13,26 @@ ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML
 previous
 versions.
 
+### Upgrading to version 2.4.0
+
+**Breaking change — configuration format.** The `apiServer.options` block has been removed. Its keys are now set
+directly on `apiServer`:
+
+```json
+// before (<= 2.3.x)                       // after (>= 2.4.0)
+"apiServer": {                             "apiServer": {
+  "options": {                               "authTokenHeader": "X-Auth-Key",
+    "authTokenHeader": "X-Auth-Key",         "authTokenSecret": "your-secret",
+    "authTokenSecret": "your-secret",        "defaultSecurityHeaders": true
+    "defaultSecurityHeaders": "1"          }
+  }
+}
+```
+
+Note that `defaultSecurityHeaders` is now a boolean (`true`/`false`) rather than the string `"1"`. The server refuses
+to start if `authTokenSecret` is empty. If you set the key only via the `ZIPREPORT_API_KEY` environment variable, no
+config change is required. The Docker base image also moved from Ubuntu to Wolfi; behavior is unchanged.
+
 ### Upgrading to version 2.3.0
 
 Starting with v2.3.0, zipreport-server uses an external configuration file and no longer bundles a self-signed certificate;
@@ -112,14 +132,14 @@ Prometheus metrics endpoint. Besides the default internal Go metrics, the follow
 
 ### Authentication
 
-zipreport-server performs header-based authentication using the token specified in your configuration file (`apiServer.options.authTokenSecret`). Clients must pass the authentication token in the `X-Auth-Key` header.
+zipreport-server performs header-based authentication using the token specified in your configuration file (`apiServer.authTokenSecret`). Clients must pass the authentication token in the `X-Auth-Key` header.
 
 **Environment Variable Override**
 
 The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, which takes precedence over the config file. This is useful for Docker deployments:
 
 ```shell
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.4.0
 ```
 
 Example:
@@ -156,10 +176,10 @@ Both variants are functionally identical and store the browser in rod's expected
 
 ```shell
 # Build locally
-docker build . --tag zipreport-server:2.3.1
+docker build . --tag zipreport-server:2.4.0
 
 # Run with API key (uses default config, HTTP only, no TLS)
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.3.1
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.4.0
 ```
 
 **Production Deployment with Custom Configuration**
@@ -171,10 +191,8 @@ Create a `config.json` file (see [config.sample.json](./config/config.sample.jso
   "apiServer": {
     "host": "",
     "port": 6543,
-    "options": {
-      "authTokenSecret": "your-secure-random-token-here",
-      "defaultSecurityHeaders": "1"
-    },
+    "authTokenSecret": "your-secure-random-token-here",
+    "defaultSecurityHeaders": true,
     "tlsEnable": false
   },
   "zipReport": {
@@ -193,7 +211,7 @@ Then run with your configuration:
 # Mount your configuration directory
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.1
+  zipreport-server:2.4.0
 ```
 
 **With TLS/HTTPS**
@@ -213,9 +231,7 @@ Update `config.json` to enable TLS:
     "tlsEnable": true,
     "tlsCert": "config/ssl/server.crt",
     "tlsKey": "config/ssl/server.key",
-    "options": {
-      "authTokenSecret": "your-secure-random-token-here"
-    }
+    "authTokenSecret": "your-secure-random-token-here"
   }
 }
 ```
@@ -225,7 +241,7 @@ Run with TLS:
 ```shell
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.3.1
+  zipreport-server:2.4.0
 ```
 
 **Using Prebuilt Image**
@@ -235,12 +251,12 @@ docker run -p 6543:6543 \
 docker pull ghcr.io/zipreport/zipreport-server:latest
 
 # Or specific version
-docker pull ghcr.io/zipreport/zipreport-server:2.3.1
+docker pull ghcr.io/zipreport/zipreport-server:2.4.0
 
 # Run with mounted configuration
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  ghcr.io/zipreport/zipreport-server:2.3.1
+  ghcr.io/zipreport/zipreport-server:2.4.0
 ```
 
 **Docker Compose Example**
@@ -250,7 +266,7 @@ version: '3.8'
 
 services:
   zipreport:
-    image: ghcr.io/zipreport/zipreport-server:2.3.1
+    image: ghcr.io/zipreport/zipreport-server:2.4.0
     ports:
       - "6543:6543"
       - "2220:2220"  # Prometheus metrics (if enabled)
