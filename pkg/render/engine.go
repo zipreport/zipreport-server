@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"zipreport-server/pkg/browser"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
 
@@ -43,6 +44,11 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 	if needsNoSandbox() {
 		logger.Info("Detected CI/Docker environment, launching Chrome with --no-sandbox")
 		l := launcher.New().NoSandbox(true)
+		if browser.IsInstalled() {
+			// Pin the pre-installed binary so rod skips its Validate() probe,
+			// which otherwise deletes and re-downloads Chromium at runtime.
+			l = l.Bin(browser.BinPath())
+		}
 		launcherURL = l.MustLaunch()
 	}
 
