@@ -5,6 +5,11 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Bumped Go toolchain from 1.26.3 to 1.26.4 to resolve standard-library advisories GO-2026-5037 (`crypto/x509`) and GO-2026-5039 (`net/textproto`)
+
 ## [2.4.0]
 
 ### Changed
