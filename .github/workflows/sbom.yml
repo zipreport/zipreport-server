@@ -49,12 +49,21 @@ jobs:
           PROJECT_NAME: ${{ github.event.repository.name }}
           PROJECT_VERSION: ${{ github.ref_name }}
         run: |
-          curl -sSf --proto '=https' -X POST "${DTRACK_HOST}/api/v1/bom" \
-            -H "X-Api-Key: ${DTRACK_API_KEY}" \
-            -F "autoCreate=true" \
-            -F "projectName=${PROJECT_NAME}" \
-            -F "projectVersion=${PROJECT_VERSION}" \
-            -F "bom=@sbom-cyclonedx.json"
+          # DTRACK_HOST carries its own scheme; require https so the API key is
+          # never sent in cleartext (belt-and-suspenders with curl --proto).
+          case "$DTRACK_HOST" in
+            https://*) ;;
+            *) echo "DTRACK_HOST must start with https://" >&2; exit 1 ;;
+          esac
+          # Pass the API key header via stdin so it does not appear in the
+          # process list (ps) on the runner.
+          printf 'X-Api-Key: %s' "$DTRACK_API_KEY" | \
+            curl -sSf --proto '=https' -X POST "${DTRACK_HOST}/api/v1/bom" \
+              -H @- \
+              -F "autoCreate=true" \
+              -F "projectName=${PROJECT_NAME}" \
+              -F "projectVersion=${PROJECT_VERSION}" \
+              -F "bom=@sbom-cyclonedx.json"
 
       - name: Generate SPDX SBOM
         run: syft . -o spdx-json > sbom-spdx.json
