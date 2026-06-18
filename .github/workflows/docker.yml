@@ -16,6 +16,11 @@ on:
     - cron: '0 6 * * *'
 
   workflow_dispatch:
+    inputs:
+      no_cache:
+        description: 'Build without layer cache to pick up fresh base image / package patches'
+        type: boolean
+        default: false
 
 jobs:
   docker_publish:
@@ -62,6 +67,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
+          no-cache: ${{ inputs.no_cache || false }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
