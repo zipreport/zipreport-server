@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
     mkdir -p /app/config/ssl
 
-FROM cgr.dev/chainguard/wolfi-base
+FROM cgr.dev/chainguard/wolfi-base:latest
 
 LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 
