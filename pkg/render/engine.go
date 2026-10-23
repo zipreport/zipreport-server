@@ -156,17 +156,6 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		}
 	}()
 
-	err = browser.IgnoreCertErrors(job.IgnoreSSLErrors)
-	if err != nil {
-		e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
-		return &JobResult{
-			ElapsedTime: 0,
-			Success:     false,
-			Output:      nil,
-			Error:       err,
-		}
-	}
-
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
 	pageCtx, pageCancel := context.WithTimeout(e.ctx, time.Duration(jobTimeout)*time.Second)
 	page, err := jobBrowser.Context(pageCtx).Page(proto.TargetCreateTarget{})
@@ -190,6 +179,14 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		evtWg.Wait()                    // wait for event goroutines to finish
 		_ = page.Context(e.ctx).Close() // close tab using a live context
 	}()
+
+	if job.IgnoreSSLErrors {
+		// page-scoped: a browser-level override would leak to other jobs on the shared Chrome
+		if err := (proto.SecuritySetIgnoreCertificateErrors{Ignore: true}).Call(page); err != nil {
+			e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
+			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
+		}
+	}
 
 	if job.UseJSEvent {
 		// render using jsEvent
