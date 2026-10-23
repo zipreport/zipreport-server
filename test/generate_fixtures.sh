@@ -34,4 +34,9 @@ echo "  Created missing-index.zpt"
 # corrupt.zpt is manually created (not a valid ZIP)
 # It should already exist as raw bytes
 
+# isolation-writer.zpt / isolation-reader.zpt
+(cd isolation-writer && zip -r ../isolation-writer.zpt .)
+(cd isolation-reader && zip -r ../isolation-reader.zpt .)
+echo "  Created isolation-writer.zpt and isolation-reader.zpt"
+
 echo "Done. All fixtures generated."
