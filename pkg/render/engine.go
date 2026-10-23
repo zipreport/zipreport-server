@@ -92,8 +92,6 @@ func NewLauncher(bin string) *launcher.Launcher {
 			l = l.Set("disable-features", keep...)
 		}
 	}
-	// WebRTC may only use proxied transport, otherwise STUN/ICE sends UDP around the egress proxy
-	l = l.Set("force-webrtc-ip-handling-policy", "disable_non_proxied_udp")
 	return l.Delete("disable-site-isolation-trials")
 }
 
@@ -208,8 +206,8 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 	start := time.Now()
 	// Each job gets its own browser context so cookies, storage, caches and
-	// service workers never outlive the job or leak between callers. Like rod's
-	// Incognito(), but all of the context's traffic, loopback and link-local
+	// service workers never outlive the job or leak between callers. Same as rod's
+	// incognito helper, but all of the context's traffic, loopback and link-local
 	// included, goes through the job's egress proxy.
 	ctxRes, err := proto.TargetCreateBrowserContext{
 		DisposeOnDetach: true,
