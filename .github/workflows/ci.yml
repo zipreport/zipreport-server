@@ -62,6 +62,9 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Install pinned browser
+        run: go run ./cmd/browser-update
+
       - name: Run tests
         run: make test-integration
         timeout-minutes: 10
