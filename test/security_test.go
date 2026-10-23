@@ -3,6 +3,7 @@ package test
 import (
 	"archive/zip"
 	"bytes"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -261,7 +262,7 @@ func newTestServer(t *testing.T, reader *zpt.ZptReader) *zpt.ZptServer {
 
 // buildForgedSizeZip returns a tiny zip whose entry declares an uncompressed
 // size above zpt.MaxFileSize.
-func buildForgedSizeZip(t *testing.T) []byte {
+func buildForgedSizeZip(t *testing.T, declared uint64) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -269,7 +270,7 @@ func buildForgedSizeZip(t *testing.T) []byte {
 		Name:               "big.bin",
 		Method:             zip.Store,
 		CompressedSize64:   4,
-		UncompressedSize64: zpt.MaxFileSize + 1,
+		UncompressedSize64: declared,
 	})
 	require.NoError(t, err)
 	_, err = w.Write([]byte("abcd"))
@@ -341,14 +342,21 @@ func TestZptServer_Streaming(t *testing.T) {
 		assert.Equal(t, strconv.Itoa(len(want)), w.Header().Get("Content-Length"))
 	})
 
-	t.Run("refuses_declared_oversize", func(t *testing.T) {
-		b := buildForgedSizeZip(t)
-		reader, err := zpt.NewZptReader(bytes.NewReader(b), int64(len(b)))
-		require.NoError(t, err)
-		w := get(newTestServer(t, reader), "/big.bin")
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
-		assert.Empty(t, w.Body.Bytes())
-	})
+	// 1<<63 and MaxUint64 overflow int64 in FileInfo.Size() to a negative value.
+	for name, declared := range map[string]uint64{
+		"refuses_declared_oversize":  zpt.MaxFileSize + 1,
+		"refuses_declared_2pow63":    1 << 63,
+		"refuses_declared_maxuint64": math.MaxUint64,
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := buildForgedSizeZip(t, declared)
+			reader, err := zpt.NewZptReader(bytes.NewReader(b), int64(len(b)))
+			require.NoError(t, err)
+			w := get(newTestServer(t, reader), "/big.bin")
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.Empty(t, w.Body.Bytes())
+		})
+	}
 
 	t.Run("missing_entry", func(t *testing.T) {
 		reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")

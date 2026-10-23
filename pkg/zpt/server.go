@@ -90,7 +90,7 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Content-Type", contentType)
 	resp.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	resp.WriteHeader(http.StatusOK)
-	if _, err = io.Copy(resp, rc); err != nil {
+	if _, err = io.CopyN(resp, rc, size); err != nil {
 		z.logger.Error(err, "error writing http response", log.KV{"address": z.Server.Addr})
 	}
 }

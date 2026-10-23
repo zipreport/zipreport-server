@@ -66,7 +66,7 @@ func (z *ZptReader) OpenFile(name string) (io.ReadCloser, int64, error) {
 		_ = f.Close()
 		return nil, 0, fs.ErrNotExist
 	}
-	if st.Size() > MaxFileSize {
+	if st.Size() < 0 || st.Size() > MaxFileSize {
 		_ = f.Close()
 		return nil, 0, ErrFileTooLarge
 	}
