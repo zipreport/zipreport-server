@@ -211,7 +211,7 @@ func TestConcurrentRequests(t *testing.T) {
 	_ = ctx
 }
 
-// TestSSLErrorsOption tests the ignore_ssl_errors parameter
+// TestSSLErrorsOption only checks that ignore_ssl_errors values parse and still render; certificate behaviour is covered by TestJobIsolation_IgnoreSSLErrors* in isolation_test.go
 func TestSSLErrorsOption(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping browser render test in short mode")

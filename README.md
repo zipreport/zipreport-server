@@ -58,6 +58,14 @@ external dependencies and scripts your template may use. This behavior may pose 
 environments.
 The daemon also relies on the creation of ephemeral http servers on localhost as part of the rendering process.
 
+- Each render job runs in a fresh browser context. Cookies, storage, service workers and the HTTP cache do not
+  survive between jobs, so remote assets (CDN fonts, scripts, images) are downloaded again for every job.
+- With `js_event=false`, the PDF is printed after page load plus the fixed `settling_time`. A slower remote asset
+  can therefore be missing from the output with no error. Reports that depend on remote assets should use
+  `js_event=true` and signal `zpt-view-ready` once their assets have loaded, or raise `settling_time`.
+- `ignore_ssl_errors` applies only to the report page's own frames. Requests made by service workers or web
+  workers are always certificate-checked.
+
 ### How it works
 
 The zipreport-server API receives a rendering request with an associated ZPT resource. For each rendering request,

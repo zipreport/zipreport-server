@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the server refuses to start when `authTokenSecret` / `ZIPREPORT_API_KEY` is empty, shorter than 32 characters, padded with whitespace, or a placeholder value published in earlier sample configs and docs. The Docker image no longer ships a usable token
 - `NewApiServer` returns an error instead of disabling authentication when given an empty secret
 - Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
+- Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs
 
 ### Changed
 - Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
 - Default `log.callerSkipFrames` is now 3 (Blueprint default)
 - TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
+- The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
 - Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
 
 ## [2.4.1]
