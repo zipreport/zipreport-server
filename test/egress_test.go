@@ -329,10 +329,16 @@ func TestEgressProxy_RedirectHopIsVetted(t *testing.T) {
 }
 
 func TestEgressProxy_ConnectToOwnHostRefused(t *testing.T) {
-	env := startProxy(t, proxyOpts{})
+	// loopback is allowed and the port is outside the pool, so only the own-host rule can refuse this
+	env := startProxy(t, proxyOpts{
+		policy:    egress.Policy{Allow: []egress.Rule{mustRule(t, "127.0.0.0/8")}},
+		poolFirst: 1,
+		lookup:    map[string][]string{"localhost": {"127.0.0.1"}},
+	})
 	_, _, code := rawConnect(t, env.addr, "localhost:"+strconv.Itoa(env.ownPort), "")
 	assert.Equal(t, 403, code)
-	assert.Equal(t, int32(0), env.ownHits.Load())
+	n, _ := env.proxy.Blocked()
+	assert.Equal(t, 1, n)
 }
 
 func TestEgressProxy_ConnectBlocked(t *testing.T) {
@@ -460,7 +466,7 @@ func TestEgressProxy_BlockedSamplesBoundedAndDistinct(t *testing.T) {
 	_, _, port := newDecoy(t)
 	long := strings.Repeat("a", 300)
 	for i := 0; i < 40; i++ {
-		u := fmt.Sprintf("http://127.0.0.1:%d/%02d-%s", port, i%20, long)
+		u := fmt.Sprintf("http://127.0.0.1:%d/%02d-%s", port, i/2, long) // each of the 20 paths twice in a row, so duplicates occur inside the first 16
 		assert.Equal(t, 403, status(t, env.client, u))
 	}
 	n, samples := env.proxy.Blocked()
