@@ -41,31 +41,29 @@ func NewServerPool(limit int, basePort int, m *monitor.Metrics, logger *log.Logg
 func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
 	<-p.slots // read slot
 	p.mx.Lock()
-	idx := -1
-	for i, val := range p.pool {
-		if val == nil {
-			idx = i
-			break
+	for idx, val := range p.pool {
+		if val != nil {
+			continue
 		}
-	}
-
-	if idx == -1 {
-		// should never happen
+		server := NewZptServer(reader, p.BasePort+idx, p.logger)
+		if err := server.Listen(); err != nil {
+			p.logger.Error(err, "ephemeral report port is held by another process; check baseHttpPort and net.ipv4.ip_local_reserved_ports", log.KV{"address": server.Server.Addr})
+			continue
+		}
+		p.pool[idx] = server
 		p.mx.Unlock()
-		p.slots <- nil // Return the slot
-		p.logger.Error(nil, "pool inconsistency: no available slot found")
-		return nil
+		p.metrics.HttpServers.Inc()
+		go func() {
+			_ = server.Run() // blocking call; error logged inside Run()
+			p.metrics.HttpServers.Dec()
+		}()
+		return server
 	}
 
-	server := NewZptServer(reader, p.BasePort+idx, p.logger)
-	p.pool[idx] = server
+	// no slot could be bound
 	p.mx.Unlock()
-	p.metrics.HttpServers.Inc()
-	go func() {
-		_ = server.Run() // blocking call; error logged inside Run()
-		p.metrics.HttpServers.Dec()
-	}()
-	return server
+	p.slots <- nil // Return the slot
+	return nil
 }
 
 func (p *ServerPool) RemoveServer(srv *ZptServer) bool {
@@ -92,9 +90,7 @@ func (p *ServerPool) Shutdown() {
 	// shutdown all servers
 	for i, srv := range p.pool {
 		if srv != nil {
-			if srv.Shutdown(blueprint.ShutdownContext()) == nil {
-				p.metrics.HttpServers.Dec()
-			}
+			_ = srv.Shutdown(blueprint.ShutdownContext())
 		}
 		p.pool[i] = nil
 	}

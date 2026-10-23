@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +29,8 @@ type ZptServer struct {
 	Server *http.Server
 	Port   int
 	logger *log.Logger
+
+	listeners []net.Listener
 }
 
 func NewZptServer(reader *ZptReader, port int, logger *log.Logger) *ZptServer {
@@ -95,18 +100,67 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (z *ZptServer) Run() error {
-	z.logger.Info(fmt.Sprintf("Starting server and listening on %s", z.Server.Addr))
-
-	err := z.Server.ListenAndServe()
-	// mask out shutdown as error
-	if !errors.Is(err, http.ErrServerClosed) {
-		z.logger.Error(err, "server exited with error", log.KV{"address": z.Server.Addr})
+// Listen binds 127.0.0.1:PORT and, where IPv6 loopback exists, [::1]:PORT;
+// the browser resolves "localhost" itself and may use either.
+func (z *ZptServer) Listen() error {
+	port := strconv.Itoa(z.Port)
+	l4, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		return err
+	}
+	z.listeners = []net.Listener{l4}
+	l6, err := net.Listen("tcp", "[::1]:"+port)
+	switch {
+	case err == nil:
+		z.listeners = append(z.listeners, l6)
+	case errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.EAFNOSUPPORT):
+		// no IPv6 loopback on this host
+	default:
+		_ = l4.Close()
+		z.listeners = nil
 		return err
 	}
 	return nil
 }
+
+func (z *ZptServer) Run() error {
+	z.logger.Info(fmt.Sprintf("Starting server and listening on %s", z.Server.Addr))
+
+	if len(z.listeners) == 0 {
+		err := z.Server.ListenAndServe()
+		// mask out shutdown as error
+		if !errors.Is(err, http.ErrServerClosed) {
+			z.logger.Error(err, "server exited with error", log.KV{"address": z.Server.Addr})
+			return err
+		}
+		return nil
+	}
+
+	errs := make([]error, len(z.listeners))
+	var wg sync.WaitGroup
+	for i, l := range z.listeners {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = z.Server.Serve(l)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		// mask out shutdown as error
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			z.logger.Error(err, "server exited with error", log.KV{"address": z.Server.Addr})
+			return err
+		}
+	}
+	return nil
+}
+
 func (z *ZptServer) Shutdown(ctx context.Context) error {
 	z.logger.Info("Shutting down server", log.KV{"address": z.Server.Addr})
-	return z.Server.Shutdown(ctx)
+	err := z.Server.Shutdown(ctx)
+	for _, l := range z.listeners {
+		_ = l.Close()
+	}
+	return err
 }
