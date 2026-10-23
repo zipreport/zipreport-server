@@ -80,7 +80,7 @@ The `fixtures/` directory contains:
 
 - Tests use a shared Prometheus metrics instance to avoid duplicate registration errors
 - The render engine requires browser automation (Rod/Chromium), so tests may take several seconds to run
-- Short mode (`-short` flag) skips timeout and concurrency tests
+- Short mode (`-short` flag) skips every test that launches Chrome (renders, timeouts, concurrency, metrics); the remaining tests need no browser
 - Tests automatically clean up resources (browsers, HTTP servers) after completion
 
 ## Authentication

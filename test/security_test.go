@@ -213,6 +213,9 @@ func TestConcurrentRequests(t *testing.T) {
 
 // TestSSLErrorsOption tests the ignore_ssl_errors parameter
 func TestSSLErrorsOption(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()

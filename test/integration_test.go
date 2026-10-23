@@ -99,6 +99,9 @@ func createMultipartRequest(t *testing.T, zipPath string, fields map[string]stri
 
 // TestRenderEndpoint_Success tests successful PDF generation
 func TestRenderEndpoint_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -264,6 +267,9 @@ func TestRenderEndpoint_NegativeMargins(t *testing.T) {
 
 // TestRenderEndpoint_CustomMargins tests custom margin values
 func TestRenderEndpoint_CustomMargins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -291,6 +297,9 @@ func TestRenderEndpoint_CustomMargins(t *testing.T) {
 
 // TestRenderEndpoint_LandscapeOrientation tests landscape page orientation
 func TestRenderEndpoint_LandscapeOrientation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -315,6 +324,9 @@ func TestRenderEndpoint_LandscapeOrientation(t *testing.T) {
 
 // TestRenderEndpoint_NestedFile tests rendering a file in a subdirectory
 func TestRenderEndpoint_NestedFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -338,6 +350,9 @@ func TestRenderEndpoint_NestedFile(t *testing.T) {
 
 // TestRenderEndpoint_DifferentPageSizes tests various page sizes
 func TestRenderEndpoint_DifferentPageSizes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -367,6 +382,9 @@ func TestRenderEndpoint_DifferentPageSizes(t *testing.T) {
 
 // TestRenderEndpoint_BooleanParsing tests various boolean value formats
 func TestRenderEndpoint_BooleanParsing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
