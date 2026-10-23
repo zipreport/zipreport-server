@@ -34,6 +34,7 @@ type Engine struct {
 	launcherURL    string          // Shared launcher URL for no-sandbox mode
 	launcherMx     sync.Mutex      // Guards launcherURL during relaunch
 	ctx            context.Context // Application-level context for pooled browsers
+	browserBin     string          // resolved once in NewEngine; never downloaded on the request path
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -41,17 +42,16 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 		logger = log.New("zipreport-engine")
 	}
 
+	bin, err := browserBin()
+	if err != nil {
+		panic(err)
+	}
+
 	// Check if we need to create a shared launcher with --no-sandbox
 	var launcherURL string
 	if needsNoSandbox() {
 		logger.Info("Detected CI/Docker environment, launching Chrome with --no-sandbox")
-		l := launcher.New().NoSandbox(true)
-		if browser.IsInstalled() {
-			// Pin the pre-installed binary so rod skips its Validate() probe,
-			// which otherwise deletes and re-downloads Chromium at runtime.
-			l = l.Bin(browser.BinPath())
-		}
-		launcherURL = l.MustLaunch()
+		launcherURL = NewLauncher(bin).MustLaunch()
 	}
 
 	return &Engine{
@@ -61,7 +61,40 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 		logger:      logger,
 		launcherURL: launcherURL,
 		ctx:         ctx,
+		browserBin:  bin,
 	}
+}
+
+// NewLauncher returns a launcher for bin with rod's defaults, except that
+// site isolation stays enabled: renderers run caller-supplied scripts.
+func NewLauncher(bin string) *launcher.Launcher {
+	l := launcher.New().Bin(bin)
+	if needsNoSandbox() {
+		l = l.NoSandbox(true)
+	}
+	if v, ok := l.GetFlags("disable-features"); ok {
+		keep := make([]string, 0, len(v))
+		for _, f := range v {
+			if f != "site-per-process" {
+				keep = append(keep, f)
+			}
+		}
+		if len(keep) == 0 {
+			l = l.Delete("disable-features")
+		} else {
+			l = l.Set("disable-features", keep...)
+		}
+	}
+	return l.Delete("disable-site-isolation-trials")
+}
+
+// browserBin returns the pinned browser, downloading it if missing, so rod
+// never falls back to its own (older) download.
+func browserBin() (string, error) {
+	if browser.IsInstalled() {
+		return browser.BinPath(), nil
+	}
+	return browser.Download()
 }
 
 func (e *Engine) EnableConsoleLog() {
@@ -342,8 +375,12 @@ func (e *Engine) GetBrowser() (*rod.Browser, error) {
 // reconnects to the shared Chrome, relaunching it once if the process has died.
 func (e *Engine) connectBrowser() (*rod.Browser, error) {
 	if e.launcherURL == "" {
-		// Dedicated launch with sandbox
-		b := rod.New().Context(e.ctx)
+		// Dedicated launch of the pinned browser, sandboxed
+		u, err := NewLauncher(e.browserBin).Context(e.ctx).Launch()
+		if err != nil {
+			return nil, err
+		}
+		b := rod.New().ControlURL(u).Context(e.ctx)
 		if err := b.Connect(); err != nil {
 			return nil, err
 		}
@@ -382,11 +419,7 @@ func (e *Engine) relaunchSharedBrowser(prevURL string) (string, error) {
 	if e.launcherURL != prevURL {
 		return e.launcherURL, nil
 	}
-	l := launcher.New().NoSandbox(true)
-	if browser.IsInstalled() {
-		l = l.Bin(browser.BinPath())
-	}
-	url, err := l.Launch()
+	url, err := NewLauncher(e.browserBin).Launch()
 	if err != nil {
 		e.logger.Error(err, "failed to relaunch shared browser")
 		return "", err
@@ -402,11 +435,14 @@ func needsNoSandbox() bool {
 	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		return true
 	}
-	// Check for Docker
+	// Mirror rod's utils.InContainer: Docker, Podman, Kubernetes
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return true
 	}
-	return false
+	if _, err := os.Stat("/.containerenv"); err == nil {
+		return true
+	}
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
 
 func (e *Engine) Shutdown() {
