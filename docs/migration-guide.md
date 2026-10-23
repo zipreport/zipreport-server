@@ -32,7 +32,7 @@ Version 2.3.0 introduced a complete configuration system overhaul. The server no
   -console false \
   -nometrics false \
   -concurrency 8 \
-  -baseport 42000 \
+  -baseport 22000 \
   -loglevel 1
 ```
 
@@ -57,7 +57,7 @@ Version 2.3.0 introduced a complete configuration system overhaul. The server no
     "enableConsoleLogging": false,
     "enableMetrics": true,
     "concurrency": 8,
-    "baseHttpPort": 42000
+    "baseHttpPort": 22000
   },
   "log": {
     "level": "info"

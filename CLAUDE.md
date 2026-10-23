@@ -65,7 +65,7 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 ### Concurrency Model
 
 - Browser pool (`rod.Pool[rod.Browser]`) with configurable size (default 8)
-- Server pool (`zpt.ServerPool`) with matching concurrency, ports starting at `baseHttpPort` (default 42000)
+- Server pool (`zpt.ServerPool`) with matching concurrency, ports starting at `baseHttpPort` (default 22000)
 - Each render job acquires one browser + one server slot; both are returned to pool after completion
 - Broken browsers (failed connections) are discarded rather than returned to pool
 

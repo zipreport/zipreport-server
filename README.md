@@ -86,8 +86,8 @@ The daemon also relies on the creation of ephemeral http servers on localhost as
     and the proxy's own lookups are a DNS channel for data leaving the server.
   - AIA certificate fetches and WebTransport (HTTP/3 over UDP) may not use the proxy.
   - Strict deployments still need a network-layer egress policy.
-- The proxy listens on an ephemeral `127.0.0.1` port. On Linux the default ephemeral range (32768-60999) overlaps
-  `baseHttpPort` (42000+); reserve the render ports with
+- The proxy listens on an ephemeral `127.0.0.1` port. The default `baseHttpPort` (22000) lies below the Linux ephemeral
+  range (32768-60999); if you set it inside that range, reserve the render ports with
   `sysctl net.ipv4.ip_local_reserved_ports=<baseHttpPort>-<baseHttpPort+concurrency-1>` to avoid bind clashes.
 - `ignore_ssl_errors` applies only to the report page's own frames. Requests made by service workers or web
   workers are always certificate-checked.
@@ -237,7 +237,7 @@ Create a `config.json` file (see [config.sample.json](./config/config.sample.jso
   },
   "zipReport": {
     "concurrency": 8,
-    "baseHttpPort": 42000
+    "baseHttpPort": 22000
   },
   "log": {
     "level": "info"

@@ -99,7 +99,7 @@ All API tests use the test authentication token defined in the test setup. The t
 - Set `ROD_DEBUG=1` for Rod debugging
 
 ### Port conflicts
-- Tests use ports 42000+ for temporary HTTP servers
+- Tests use ports 22000-32000 for temporary HTTP servers
 - Ensure these ports are available
 
 ## Future Improvements

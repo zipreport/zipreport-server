@@ -2,12 +2,14 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
+	"zipreport-server/pkg/zpt"
 
 	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/config/provider"
@@ -74,6 +76,11 @@ func (z *ZipReport) Build(appName string) {
 	// Blueprint cancels z.Context before destructors run; the engine must outlive it so the API
 	// destructor can drain in-flight renders. It is cancelled by the engine destructor, which runs last.
 	engineCtx, engineCancel := context.WithCancel(context.WithoutCancel(z.Context))
+	if overlap, lo, hi, ok := zpt.EphemeralRangeOverlap(cfg.ZipReport.BaseHttpPort, cfg.ZipReport.Concurrency); ok && overlap {
+		z.logger.Warn(fmt.Sprintf("render ports %d-%d overlap the OS ephemeral port range %d-%d; outbound connections can take a report port and fail jobs. Lower baseHttpPort below %d or run: sysctl net.ipv4.ip_local_reserved_ports=%d-%d",
+			cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+cfg.ZipReport.Concurrency-1, lo, hi, lo,
+			cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+cfg.ZipReport.Concurrency-1))
+	}
 	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
 	if cfg.ZipReport.EnableConsoleLogging {
 		zptEngine.EnableConsoleLog()

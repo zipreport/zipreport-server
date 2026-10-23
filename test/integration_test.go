@@ -27,7 +27,7 @@ var (
 	// Shared metrics instance to avoid duplicate registration
 	sharedMetrics = monitor.NewMetrics()
 	// Port counter to avoid conflicts between tests
-	portCounter = 42000
+	portCounter = 22000
 )
 
 // setupTestServer creates a test API server instance

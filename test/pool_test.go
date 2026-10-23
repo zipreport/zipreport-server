@@ -48,59 +48,59 @@ func getStatus(t *testing.T, url string) int {
 
 func TestServerPool_BindFailureFailsBuild(t *testing.T) {
 	reader, logger := poolTestSetup(t)
-	occupier, err := net.Listen("tcp", "127.0.0.1:44100")
+	occupier, err := net.Listen("tcp", "127.0.0.1:30100")
 	require.NoError(t, err)
 	defer func() { _ = occupier.Close() }()
 
-	pool := zpt.NewServerPool(1, 44100, sharedMetrics, logger)
+	pool := zpt.NewServerPool(1, 30100, sharedMetrics, logger)
 	assert.Nil(t, buildWithGuard(t, pool, reader))
 
 	_ = occupier.Close()
 	srv := buildWithGuard(t, pool, reader)
 	require.NotNil(t, srv)
-	assert.Equal(t, 200, getStatus(t, "http://localhost:44100/test.html"))
+	assert.Equal(t, 200, getStatus(t, "http://localhost:30100/test.html"))
 	pool.RemoveServer(srv)
 }
 
 func TestServerPool_SkipsHeldPort(t *testing.T) {
 	reader, logger := poolTestSetup(t)
-	occupier, err := net.Listen("tcp", "127.0.0.1:44500")
+	occupier, err := net.Listen("tcp", "127.0.0.1:30500")
 	require.NoError(t, err)
 	defer func() { _ = occupier.Close() }()
 
-	pool := zpt.NewServerPool(2, 44500, sharedMetrics, logger)
+	pool := zpt.NewServerPool(2, 30500, sharedMetrics, logger)
 	srv := buildWithGuard(t, pool, reader)
 	require.NotNil(t, srv)
-	assert.Equal(t, 44501, srv.Port)
-	assert.Equal(t, 200, getStatus(t, "http://localhost:44501/test.html"))
+	assert.Equal(t, 30501, srv.Port)
+	assert.Equal(t, 200, getStatus(t, "http://localhost:30501/test.html"))
 	pool.RemoveServer(srv)
 
 	_ = occupier.Close()
 	srv2 := buildWithGuard(t, pool, reader)
 	require.NotNil(t, srv2)
-	assert.Equal(t, 44500, srv2.Port)
+	assert.Equal(t, 30500, srv2.Port)
 	pool.RemoveServer(srv2)
 }
 
 func TestServerPool_IPv6HeldPortFailsBuild(t *testing.T) {
 	reader, logger := poolTestSetup(t)
-	occupier, err := net.Listen("tcp", "[::1]:44600")
+	occupier, err := net.Listen("tcp", "[::1]:30600")
 	if err != nil {
 		t.Skip("IPv6 loopback unavailable: " + err.Error())
 	}
 	defer func() { _ = occupier.Close() }()
 
-	pool := zpt.NewServerPool(1, 44600, sharedMetrics, logger)
+	pool := zpt.NewServerPool(1, 30600, sharedMetrics, logger)
 	assert.Nil(t, buildWithGuard(t, pool, reader))
 }
 
 func TestZptServer_ShutdownBeforeRunReleasesPort(t *testing.T) {
 	reader, logger := poolTestSetup(t)
-	srv := zpt.NewZptServer(reader, 44700, logger)
+	srv := zpt.NewZptServer(reader, 30700, logger)
 	require.NoError(t, srv.Listen())
 	require.NoError(t, srv.Shutdown(context.Background()))
 
-	l, err := net.Listen("tcp", "127.0.0.1:44700")
+	l, err := net.Listen("tcp", "127.0.0.1:30700")
 	require.NoError(t, err)
 	_ = l.Close()
 }
@@ -109,11 +109,11 @@ func TestServerPool_GaugeBalancedAfterShutdown(t *testing.T) {
 	reader, logger := poolTestSetup(t)
 	before := testutil.ToFloat64(sharedMetrics.HttpServers)
 
-	pool := zpt.NewServerPool(1, 44200, sharedMetrics, logger)
+	pool := zpt.NewServerPool(1, 30200, sharedMetrics, logger)
 	srv := buildWithGuard(t, pool, reader)
 	require.NotNil(t, srv)
 	require.Eventually(t, func() bool {
-		resp, err := http.Get("http://localhost:44200/test.html")
+		resp, err := http.Get("http://localhost:30200/test.html")
 		if err != nil {
 			return false
 		}

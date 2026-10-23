@@ -28,7 +28,7 @@ func TestZptServer_PathTraversal(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create ZPT server
-	server := zpt.NewZptServer(reader, 43000, logger)
+	server := zpt.NewZptServer(reader, 29000, logger)
 	require.NotNil(t, server)
 
 	testCases := []struct {
@@ -257,7 +257,7 @@ func newTestServer(t *testing.T, reader *zpt.ZptReader) *zpt.ZptServer {
 	logConfig := log.NewDefaultConfig()
 	logConfig.Level = "error"
 	require.NoError(t, log.Configure(logConfig))
-	return zpt.NewZptServer(reader, 43000, log.New("test-security"))
+	return zpt.NewZptServer(reader, 29000, log.New("test-security"))
 }
 
 // buildForgedSizeZip returns a tiny zip whose entry declares an uncompressed
@@ -305,9 +305,9 @@ func TestZptServer_HostCheck(t *testing.T) {
 	}{
 		{"own_host", server.Server.Addr, http.StatusOK},
 		{"default_test_host", "", http.StatusMisdirectedRequest},
-		{"subdomain_localhost", "a.localhost:43000", http.StatusMisdirectedRequest},
-		{"ip_loopback", "127.0.0.1:43000", http.StatusMisdirectedRequest},
-		{"wrong_port", "localhost:43001", http.StatusMisdirectedRequest},
+		{"subdomain_localhost", "a.localhost:29000", http.StatusMisdirectedRequest},
+		{"ip_loopback", "127.0.0.1:29000", http.StatusMisdirectedRequest},
+		{"wrong_port", "localhost:29001", http.StatusMisdirectedRequest},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -68,7 +68,7 @@ func startServer(t *testing.T, level string) (cmd *exec.Cmd, baseURL string, key
 			"readTimeoutSeconds":  300,
 			"writeTimeoutSeconds": 300,
 			"concurrency":         1,
-			"baseHttpPort":        47000,
+			"baseHttpPort":        31000,
 			"enableMetrics":       false,
 		},
 		"log": map[string]any{
