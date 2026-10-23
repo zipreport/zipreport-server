@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"zipreport-server/pkg/zpt"
 
@@ -94,6 +95,7 @@ func TestZptServer_PathTraversal(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tc.requestURI, nil)
+			req.Host = server.Server.Addr
 			w := httptest.NewRecorder()
 
 			server.ServeHTTP(w, req)
@@ -247,4 +249,141 @@ func TestSSLErrorsOption(t *testing.T) {
 		})
 	}
 	_ = ctx
+}
+
+func newTestServer(t *testing.T, reader *zpt.ZptReader) *zpt.ZptServer {
+	t.Helper()
+	logConfig := log.NewDefaultConfig()
+	logConfig.Level = "error"
+	require.NoError(t, log.Configure(logConfig))
+	return zpt.NewZptServer(reader, 43000, log.New("test-security"))
+}
+
+// buildForgedSizeZip returns a tiny zip whose entry declares an uncompressed
+// size above zpt.MaxFileSize.
+func buildForgedSizeZip(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name:               "big.bin",
+		Method:             zip.Store,
+		CompressedSize64:   4,
+		UncompressedSize64: zpt.MaxFileSize + 1,
+	})
+	require.NoError(t, err)
+	_, err = w.Write([]byte("abcd"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+// maxWriteRecorder discards the body and records the largest single Write.
+type maxWriteRecorder struct {
+	*httptest.ResponseRecorder
+	max, total int
+}
+
+func (m *maxWriteRecorder) Write(b []byte) (int, error) {
+	if len(b) > m.max {
+		m.max = len(b)
+	}
+	m.total += len(b)
+	return len(b), nil
+}
+
+func TestZptServer_HostCheck(t *testing.T) {
+	reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")
+	require.NoError(t, err)
+	server := newTestServer(t, reader)
+
+	testCases := []struct {
+		name     string
+		host     string
+		expected int
+	}{
+		{"own_host", server.Server.Addr, http.StatusOK},
+		{"default_test_host", "", http.StatusMisdirectedRequest},
+		{"subdomain_localhost", "a.localhost:43000", http.StatusMisdirectedRequest},
+		{"ip_loopback", "127.0.0.1:43000", http.StatusMisdirectedRequest},
+		{"wrong_port", "localhost:43001", http.StatusMisdirectedRequest},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test.html", nil)
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, req)
+			assert.Equal(t, tc.expected, w.Code)
+		})
+	}
+}
+
+func TestZptServer_Streaming(t *testing.T) {
+	get := func(server *zpt.ZptServer, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = server.Server.Addr
+		w := httptest.NewRecorder()
+		server.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("serves_body_with_length", func(t *testing.T) {
+		reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")
+		require.NoError(t, err)
+		want, err := reader.ReadFile("test.html")
+		require.NoError(t, err)
+		w := get(newTestServer(t, reader), "/test.html")
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, want, w.Body.Bytes())
+		assert.Equal(t, strconv.Itoa(len(want)), w.Header().Get("Content-Length"))
+	})
+
+	t.Run("refuses_declared_oversize", func(t *testing.T) {
+		b := buildForgedSizeZip(t)
+		reader, err := zpt.NewZptReader(bytes.NewReader(b), int64(len(b)))
+		require.NoError(t, err)
+		w := get(newTestServer(t, reader), "/big.bin")
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Empty(t, w.Body.Bytes())
+	})
+
+	t.Run("missing_entry", func(t *testing.T) {
+		reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, get(newTestServer(t, reader), "/nope.html").Code)
+	})
+
+	t.Run("directory_entry", func(t *testing.T) {
+		reader, err := zpt.NewZptReaderFromFile("fixtures/test.zpt")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, get(newTestServer(t, reader), "/subdirectory").Code)
+	})
+
+	t.Run("streams_large_entry", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("zeros.bin")
+		require.NoError(t, err)
+		chunk := make([]byte, 1<<20)
+		for i := 0; i < 16; i++ {
+			_, err = w.Write(chunk)
+			require.NoError(t, err)
+		}
+		require.NoError(t, zw.Close())
+		reader, err := zpt.NewZptReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		require.NoError(t, err)
+
+		server := newTestServer(t, reader)
+		req := httptest.NewRequest("GET", "/zeros.bin", nil)
+		req.Host = server.Server.Addr
+		rec := &maxWriteRecorder{ResponseRecorder: httptest.NewRecorder()}
+		server.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "16777216", rec.Header().Get("Content-Length"))
+		assert.Equal(t, 16<<20, rec.total)
+		assert.LessOrEqual(t, rec.max, 64<<10)
+	})
 }

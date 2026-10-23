@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -44,6 +45,12 @@ func NewZptServer(reader *ZptReader, port int, logger *log.Logger) *ZptServer {
 }
 
 func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	if req.Host != z.Server.Addr {
+		z.logger.Warn("rejected request with foreign host", log.KV{"host": req.Host, "address": z.Server.Addr})
+		resp.WriteHeader(http.StatusMisdirectedRequest)
+		return
+	}
+
 	// Use URL.Path (decoded, query stripped) rather than the raw RequestURI so
 	// query strings on asset URLs don't break lookups and encoded traversal is
 	// decoded before validation.
@@ -64,23 +71,28 @@ func (z *ZptServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	buf, err := z.Zpt.ReadFile(name)
-	if err == nil {
-		contentType := mime.TypeByExtension(filepath.Ext(name))
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		resp.Header().Set("Content-Type", contentType)
-		resp.WriteHeader(http.StatusOK)
-		_, err = resp.Write(buf)
-		if err != nil {
-			z.logger.Error(err, "error writing http response", log.KV{"address": z.Server.Addr})
-		}
-		return
-	} else {
+	rc, size, err := z.Zpt.OpenFile(name)
+	if err != nil {
 		z.logger.Warn("error serving file", log.KV{"uri": name})
+		if errors.Is(err, ErrFileTooLarge) {
+			resp.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		resp.WriteHeader(http.StatusNotFound)
+		return
 	}
-	resp.WriteHeader(http.StatusNotFound)
+	defer func() { _ = rc.Close() }()
+
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	resp.Header().Set("Content-Type", contentType)
+	resp.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	resp.WriteHeader(http.StatusOK)
+	if _, err = io.Copy(resp, rc); err != nil {
+		z.logger.Error(err, "error writing http response", log.KV{"address": z.Server.Addr})
+	}
 }
 
 func (z *ZptServer) Run() error {

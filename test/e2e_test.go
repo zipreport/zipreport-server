@@ -3,6 +3,7 @@ package test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,6 +75,46 @@ func TestE2E_JSEventTimeout(t *testing.T) {
 	assert.True(t, isValidPDF(body), "Response should be a valid PDF even after JS timeout")
 
 	time.Sleep(100 * time.Millisecond)
+	_ = ctx
+}
+
+// TestE2E_SubresourceServedThroughHostCheck proves Chrome's subresource requests
+// carry the Host the ephemeral server accepts: the ready signal comes from a
+// script loaded as a subresource, so a 421 would stall until timeout_js.
+func TestE2E_SubresourceServedThroughHostCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Chrome-backed test in short mode")
+	}
+
+	srv, engine, ctx, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	zipBytes := buildZipFiles(t, map[string][]byte{
+		"report.html": []byte(`<html><body><p>hello</p><script src="ready.js"></script></body></html>`),
+		"ready.js":    []byte(`setTimeout(function(){ console.log("zpt-view-ready"); }, 1000);`),
+	})
+	zipPath := filepath.Join(t.TempDir(), "subresource.zpt")
+	require.NoError(t, os.WriteFile(zipPath, zipBytes, 0o600))
+
+	req := createMultipartRequest(t, zipPath, map[string]string{
+		"page_size":  "A4",
+		"margins":    "standard",
+		"js_event":   "true",
+		"timeout_js": "20",
+	})
+	req.Header.Set("X-Auth-Key", testAuthToken)
+
+	w := httptest.NewRecorder()
+	start := time.Now()
+	srv.Router.ServeHTTP(w, req)
+	elapsed := time.Since(start)
+	t.Logf("elapsed: %s", elapsed)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, isValidPDF(w.Body.Bytes()))
+	assert.GreaterOrEqual(t, elapsed, 1*time.Second)
+	assert.Less(t, elapsed, 10*time.Second)
 	_ = ctx
 }
 

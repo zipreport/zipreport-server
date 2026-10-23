@@ -2,8 +2,10 @@ package zpt
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 )
 
@@ -44,6 +46,31 @@ func (z *ZptReader) ReadFile(name string) ([]byte, error) {
 		return nil, fmt.Errorf("file %q exceeds maximum decompressed size of %d bytes", name, MaxFileSize)
 	}
 	return buf, nil
+}
+
+var ErrFileTooLarge = errors.New("zip entry exceeds maximum decompressed size")
+
+// OpenFile opens an entry for streaming. The declared size is checked before any
+// decompression; archive/zip refuses to read past the declared size.
+func (z *ZptReader) OpenFile(name string) (io.ReadCloser, int64, error) {
+	f, err := z.Reader.Open(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, err
+	}
+	if st.IsDir() {
+		_ = f.Close()
+		return nil, 0, fs.ErrNotExist
+	}
+	if st.Size() > MaxFileSize {
+		_ = f.Close()
+		return nil, 0, ErrFileTooLarge
+	}
+	return f, st.Size(), nil
 }
 
 func (z *ZptReader) Destroy() {
