@@ -1,7 +1,5 @@
-// Package browser provides Chromium download functionality with arm64 Linux support.
-// This replaces go-rod's built-in browser downloader which lacks arm64 Linux builds.
-// The downloaded browser is stored in rod's expected cache location so rod's launcher
-// finds it without additional configuration.
+// Package browser downloads a pinned Chrome for Testing build for every supported
+// platform, replacing go-rod's built-in (older, revision-pinned) browser downloader.
 package browser
 
 import (
@@ -15,73 +13,63 @@ import (
 	"strings"
 )
 
-// Revision constants matching rod's expected cache directory structure.
-// Rod looks for the browser at ~/.cache/rod/browser/chromium-{Revision}/chrome
-const Revision = 1321438
+// Version is the pinned Chrome for Testing build. To bump it, use the Stable
+// entry of https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json
+const Version = "156.0.8078.47"
 
-// RevisionPlaywright is the Playwright CDN revision for arm64 Linux builds.
-const RevisionPlaywright = 1202
-
-// platformConfig maps OS/arch to download URL parameters.
-type platformConfig struct {
-	urlPrefix string // Google/NPM CDN path prefix
-	zipName   string // ZIP filename on Google/NPM CDN
+// platforms maps GOOS_GOARCH to the Chrome for Testing platform name.
+var platforms = map[string]string{
+	"darwin_amd64":  "mac-x64",
+	"darwin_arm64":  "mac-arm64",
+	"linux_amd64":   "linux64",
+	"linux_arm64":   "linux-arm64",
+	"windows_386":   "win32",
+	"windows_amd64": "win64",
 }
 
-var platforms = map[string]platformConfig{
-	"darwin_amd64":  {"Mac", "chrome-mac.zip"},
-	"darwin_arm64":  {"Mac_Arm", "chrome-mac.zip"},
-	"linux_amd64":   {"Linux_x64", "chrome-linux.zip"},
-	"linux_arm64":   {"", ""}, // handled via Playwright CDN
-	"windows_386":   {"Win", "chrome-win.zip"},
-	"windows_amd64": {"Win_x64", "chrome-win.zip"},
-}
-
-// DownloadURL returns the Chromium download URL for the current platform.
-func DownloadURL() (string, error) {
-	key := runtime.GOOS + "_" + runtime.GOARCH
-	conf, ok := platforms[key]
+// DownloadURLFor returns the Chrome for Testing download URL for a platform.
+func DownloadURLFor(goos, goarch string) (string, error) {
+	p, ok := platforms[goos+"_"+goarch]
 	if !ok {
-		return "", fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("unsupported platform: %s/%s", goos, goarch)
 	}
-
-	// arm64 Linux uses Playwright CDN
-	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
-		return fmt.Sprintf(
-			"https://playwright.azureedge.net/builds/chromium/%d/chromium-linux-arm64.zip",
-			RevisionPlaywright,
-		), nil
-	}
-
 	return fmt.Sprintf(
-		"https://storage.googleapis.com/chromium-browser-snapshots/%s/%d/%s",
-		conf.urlPrefix,
-		Revision,
-		conf.zipName,
+		"https://storage.googleapis.com/chrome-for-testing-public/%s/%s/chrome-%s.zip",
+		Version, p, p,
 	), nil
 }
 
-// CacheDir returns the rod-compatible browser cache directory.
+// DownloadURL returns the Chrome for Testing download URL for the current platform.
+func DownloadURL() (string, error) {
+	return DownloadURLFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// CacheDir returns the browser cache directory.
 func CacheDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "rod", "browser")
 }
 
-// BrowserDir returns the specific revision directory.
+// BrowserDir returns the install directory, named after the pinned Version so
+// a version bump never reuses a stale binary.
 func BrowserDir() string {
-	return filepath.Join(CacheDir(), fmt.Sprintf("chromium-%d", Revision))
+	return filepath.Join(CacheDir(), "chrome-"+Version)
+}
+
+// binName returns the executable path relative to the install directory.
+func binName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+	case "windows":
+		return "chrome.exe"
+	}
+	return "chrome"
 }
 
 // BinPath returns the expected browser executable path.
 func BinPath() string {
-	bin := "chrome"
-	switch runtime.GOOS {
-	case "darwin":
-		bin = "Chromium.app/Contents/MacOS/Chromium"
-	case "windows":
-		bin = "chrome.exe"
-	}
-	return filepath.Join(BrowserDir(), bin)
+	return filepath.Join(BrowserDir(), binName())
 }
 
 // IsInstalled checks if the browser binary exists and is executable.
@@ -93,8 +81,7 @@ func IsInstalled() bool {
 	return !info.IsDir()
 }
 
-// Download fetches and installs the Chromium browser for the current platform.
-// It stores the binary in rod's expected cache location.
+// Download fetches and installs the pinned Chrome for Testing build for the current platform.
 func Download() (string, error) {
 	if IsInstalled() {
 		return BinPath(), nil
@@ -105,7 +92,7 @@ func Download() (string, error) {
 		return "", err
 	}
 
-	fmt.Printf("Downloading Chromium from %s\n", url)
+	fmt.Printf("Downloading Chrome for Testing from %s\n", url)
 
 	// Download to temp file
 	resp, err := http.Get(url)
@@ -134,20 +121,39 @@ func Download() (string, error) {
 
 	fmt.Printf("Downloaded %d bytes\n", written)
 
-	// Clean up existing directory
-	destDir := BrowserDir()
-	_ = os.RemoveAll(destDir)
+	// Extract into a temp dir under the cache dir, then rename into place, so an
+	// interrupted or concurrent install is never accepted as complete.
+	if err := os.MkdirAll(CacheDir(), 0755); err != nil {
+		return "", fmt.Errorf("failed to create cache dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(CacheDir(), ".chrome-download-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
 
-	// Extract zip
-	if err := extractZip(tmpPath, destDir); err != nil {
+	if err := extractZip(tmpPath, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("extraction failed: %w", err)
 	}
 
-	binPath := BinPath()
-	if err := os.Chmod(binPath, 0755); err != nil {
+	if err := os.Chmod(filepath.Join(tmpDir, binName()), 0755); err != nil {
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("chmod failed: %w", err)
 	}
 
+	destDir := BrowserDir()
+	if !IsInstalled() {
+		_ = os.RemoveAll(destDir)
+	}
+	if err := os.Rename(tmpDir, destDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		if IsInstalled() {
+			return BinPath(), nil
+		}
+		return "", fmt.Errorf("install failed: %w", err)
+	}
+
+	binPath := BinPath()
 	fmt.Printf("Installed: %s\n", binPath)
 	return binPath, nil
 }
