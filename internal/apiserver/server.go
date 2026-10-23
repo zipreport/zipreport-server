@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"crypto/subtle"
+	"errors"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -57,9 +58,10 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	if header == "" {
 		header = auth.DefaultTokenAuthHeader
 	}
-	if cfg.AuthTokenSecret != "" {
-		srv.UseAuth(constantTimeToken{header: header, key: cfg.AuthTokenSecret})
+	if cfg.AuthTokenSecret == "" {
+		return nil, errors.New("authTokenSecret cannot be empty")
 	}
+	srv.UseAuth(constantTimeToken{header: header, key: cfg.AuthTokenSecret})
 
 	v := srv.Group("v2")
 	{

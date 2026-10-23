@@ -6,7 +6,7 @@
     "writeTimeout": 600,
     "debug": false,
     "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "my-super-secret-token",
+    "authTokenSecret": "",
     "defaultSecurityHeaders": true,
     "trustedProxies": [],
     "tlsCert": "",

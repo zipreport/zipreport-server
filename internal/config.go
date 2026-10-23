@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
+	"strings"
 	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/metrics"
 	"zipreport-server/pkg/render"
@@ -16,7 +18,26 @@ const (
 	DefaultReadTimeoutSeconds  = 300
 	DefaultWriteTimeoutSeconds = 300
 	DefaultPort                = 6543
+	MinAuthSecretLength        = 32
 )
+
+var (
+	ErrEmptyAuthSecret       = errors.New("authTokenSecret option cannot be empty")
+	ErrWhitespaceAuthSecret  = errors.New("authTokenSecret must not start or end with whitespace")
+	ErrPlaceholderAuthSecret = errors.New("authTokenSecret is a publicly documented placeholder; set a unique secret in apiServer.authTokenSecret or ZIPREPORT_API_KEY")
+	ErrWeakAuthSecret        = errors.New("authTokenSecret must be at least 32 characters; generate one with: openssl rand -hex 32")
+)
+
+// values published as example secrets in sample configs and docs
+var placeholderAuthSecrets = []string{
+	"my-super-secret-token",
+	"your-secret",
+	"your-secure-random-token-here",
+	"your-secret-key",
+	"my-secret",
+	"your-secure-token-here",
+	"<generate: openssl rand -hex 32>",
+}
 
 type ZipReportConfig struct {
 	ReadTimeoutSeconds   int  `json:"readTimeoutSeconds"`
@@ -77,7 +98,7 @@ func apiServerConfig() *apiserver.ApiServerConfig {
 	return &apiserver.ApiServerConfig{
 		ServerConfig:           *sc,
 		AuthTokenHeader:        "X-Auth-Key",
-		AuthTokenSecret:        "my-super-secret-token",
+		AuthTokenSecret:        "",
 		DefaultSecurityHeaders: true,
 	}
 }
@@ -90,9 +111,19 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// validate auth secret is set
-	if len(c.ApiServer.AuthTokenSecret) == 0 {
-		return errors.New("authTokenSecret option cannot be empty")
+	s := c.ApiServer.AuthTokenSecret
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return ErrEmptyAuthSecret
+	}
+	if t != s {
+		return ErrWhitespaceAuthSecret
+	}
+	if slices.Contains(placeholderAuthSecrets, t) {
+		return ErrPlaceholderAuthSecret
+	}
+	if len(t) < MinAuthSecretLength {
+		return ErrWeakAuthSecret
 	}
 
 	if c.ZipReport == nil {
@@ -121,7 +152,7 @@ func (c *Config) Validate() error {
 // ApplyEnvOverrides applies environment variable overrides to the config.
 // Environment variables take precedence over config file values.
 // Supported variables:
-//   - ZIPREPORT_API_KEY: overrides apiServer.options.authTokenSecret
+//   - ZIPREPORT_API_KEY: overrides apiServer.authTokenSecret
 func (c *Config) ApplyEnvOverrides() {
 	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
 		c.ApiServer.AuthTokenSecret = apiKey
