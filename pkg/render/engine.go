@@ -135,6 +135,27 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	e.logger.Info("browser acquired", log.KV{"id": jobId})
 
 	start := time.Now()
+	// Each job gets its own browser context so cookies, storage, caches and
+	// service workers never outlive the job or leak between callers.
+	jobBrowser, err := browser.Incognito()
+	if err != nil {
+		e.logger.Error(err, "failed to create browser context", log.KV{"id": jobId})
+		return &JobResult{
+			ElapsedTime: 0,
+			Success:     false,
+			Output:      nil,
+			Error:       err,
+		}
+	}
+	defer func() {
+		// disposes only this context; never call Close() on the pooled browser here
+		disposeCtx, disposeCancel := context.WithTimeout(e.ctx, 5*time.Second)
+		defer disposeCancel()
+		if err := jobBrowser.Context(disposeCtx).Close(); err != nil {
+			e.logger.Warn("failed to dispose browser context", log.KV{"id": jobId, "error": err.Error()})
+		}
+	}()
+
 	err = browser.IgnoreCertErrors(job.IgnoreSSLErrors)
 	if err != nil {
 		e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
@@ -148,7 +169,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
 	pageCtx, pageCancel := context.WithTimeout(e.ctx, time.Duration(jobTimeout)*time.Second)
-	page, err := browser.Context(pageCtx).Page(proto.TargetCreateTarget{})
+	page, err := jobBrowser.Context(pageCtx).Page(proto.TargetCreateTarget{})
 	if err != nil {
 		pageCancel()
 		e.logger.Error(err, "failed to create page", log.KV{"id": jobId})
