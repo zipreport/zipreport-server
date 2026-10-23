@@ -44,7 +44,8 @@
     "enableHttpDebugging": false,
     "enableMetrics": false,
     "concurrency": 8,
-    "baseHttpPort": 42000
+    "baseHttpPort": 42000,
+    "egressAllow": []
   },
   "log": {
     "level": "info",

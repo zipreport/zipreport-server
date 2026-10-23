@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
+	"zipreport-server/pkg/egress"
+	"zipreport-server/pkg/render"
 
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
@@ -68,6 +72,23 @@ func buildZipFiles(t *testing.T, files map[string][]byte) []byte {
 	}
 	require.NoError(t, zw.Close())
 	return buf.Bytes()
+}
+
+// allowTestServers lets the job proxy reach loopback test servers, by exact host:port. A server whose
+// port falls in the engine's pool range would be refused regardless, so that is reported explicitly.
+func allowTestServers(t *testing.T, engine *render.Engine, concurrency int, serverURLs ...string) {
+	t.Helper()
+	var p egress.Policy
+	for _, u := range serverURLs {
+		pu, err := url.Parse(u)
+		require.NoError(t, err)
+		port, err := strconv.Atoi(pu.Port())
+		require.NoError(t, err)
+		require.False(t, port >= engine.ServerPool.BasePort && port < engine.ServerPool.BasePort+concurrency,
+			"test server port %d collides with the engine's pool range", port)
+		p.Allow = append(p.Allow, mustRule(t, pu.Host))
+	}
+	engine.SetEgressPolicy(p)
 }
 
 func newPNGServer(t *testing.T) *httptest.Server {
@@ -138,6 +159,7 @@ func TestJobIsolation_IgnoreSSLErrorsScopedToJob(t *testing.T) {
 	defer cancel()
 	defer engine.Shutdown()
 	_ = ctx
+	allowTestServers(t, engine, 2, tlsSrv.URL)
 
 	pX := filepath.Join(t.TempDir(), "x.zpt")
 	require.NoError(t, os.WriteFile(pX, zipX, 0o600))
@@ -201,6 +223,7 @@ setTimeout(function () { console.log('zpt-view-ready'); }, 10000);
 	defer cancel()
 	defer engine.Shutdown()
 	_ = ctx
+	allowTestServers(t, engine, 1, frameSrv.URL, tlsSrv.URL)
 
 	pages := renderZipPages(t, srv, z, map[string]string{"ignore_ssl_errors": "true"})
 	assert.Equal(t, 2, pages, "cert override must cover cross-site iframes")

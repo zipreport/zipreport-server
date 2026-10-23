@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"zipreport-server/pkg/browser"
+	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/zpt"
 
@@ -35,6 +38,9 @@ type Engine struct {
 	launcherMx     sync.Mutex      // Guards launcherURL during relaunch
 	ctx            context.Context // Application-level context for pooled browsers
 	browserBin     string          // resolved once in NewEngine; never downloaded on the request path
+	concurrency    int
+	egressPolicy   egress.Policy
+	egressLookup   egress.LookupFunc
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -62,6 +68,7 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 		launcherURL: launcherURL,
 		ctx:         ctx,
 		browserBin:  bin,
+		concurrency: concurrency,
 	}
 }
 
@@ -85,6 +92,8 @@ func NewLauncher(bin string) *launcher.Launcher {
 			l = l.Set("disable-features", keep...)
 		}
 	}
+	// WebRTC may only use proxied transport, otherwise STUN/ICE sends UDP around the egress proxy
+	l = l.Set("force-webrtc-ip-handling-policy", "disable_non_proxied_udp")
 	return l.Delete("disable-site-isolation-trials")
 }
 
@@ -104,6 +113,11 @@ func (e *Engine) EnableConsoleLog() {
 func (e *Engine) EnableHttpDebugging() {
 	e.httpDebug = true
 }
+
+func (e *Engine) SetEgressPolicy(p egress.Policy) { e.egressPolicy = p }
+
+// SetEgressLookup replaces DNS resolution in job proxies. Test-only: production never calls it.
+func (e *Engine) SetEgressLookup(fn egress.LookupFunc) { e.egressLookup = fn }
 
 func (e *Engine) RenderJob(job *Job) *JobResult {
 	jobId := job.Id.String()
@@ -132,6 +146,31 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}
 	defer e.ServerPool.RemoveServer(server)
 	e.logger.Info("started ephemeral http server", log.KV{"id": jobId, "address": server.Server.Addr})
+
+	proxy := egress.New(server.Server.Addr, "127.0.0.1:"+strconv.Itoa(server.Port), e.ServerPool.BasePort, e.concurrency, e.egressPolicy)
+	if e.egressLookup != nil {
+		proxy.Lookup = e.egressLookup
+	}
+	proxyAddr, err := proxy.Start()
+	if err != nil {
+		e.logger.Error(err, "failed to start egress proxy", log.KV{"id": jobId})
+		return &JobResult{Success: false, Error: err}
+	}
+	// nothing to dispose until the job's browser context exists
+	disposed := true
+	defer func() {
+		if !disposed {
+			// The context may still exist and points at this port; keep it and refuse everything
+			// rather than freeing the port for another job's proxy.
+			proxy.DenyAll()
+			e.logger.Error(nil, "browser context not disposed; egress proxy left open in deny-all mode", log.KV{"id": jobId})
+		} else {
+			_ = proxy.Close()
+		}
+		if n, s := proxy.Blocked(); n > 0 {
+			e.logger.Warn("blocked network requests from rendered page", log.KV{"id": jobId, "count": n, "samples": s})
+		}
+	}()
 
 	browser, err := e.GetBrowser()
 	if err != nil {
@@ -169,8 +208,14 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 	start := time.Now()
 	// Each job gets its own browser context so cookies, storage, caches and
-	// service workers never outlive the job or leak between callers.
-	jobBrowser, err := browser.Incognito()
+	// service workers never outlive the job or leak between callers. Like rod's
+	// Incognito(), but all of the context's traffic, loopback and link-local
+	// included, goes through the job's egress proxy.
+	ctxRes, err := proto.TargetCreateBrowserContext{
+		DisposeOnDetach: true,
+		ProxyServer:     "http://" + proxyAddr,
+		ProxyBypassList: "<-loopback>",
+	}.Call(browser)
 	if err != nil {
 		e.logger.Error(err, "failed to create browser context", log.KV{"id": jobId})
 		return &JobResult{
@@ -180,12 +225,18 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
+	jb := *browser
+	jb.BrowserContextID = ctxRes.BrowserContextID
+	jobBrowser := &jb
+	disposed = false
 	defer func() {
 		// disposes only this context; never call Close() on the pooled browser here
 		disposeCtx, disposeCancel := context.WithTimeout(e.ctx, 5*time.Second)
 		defer disposeCancel()
 		if err := jobBrowser.Context(disposeCtx).Close(); err != nil {
 			e.logger.Warn("failed to dispose browser context", log.KV{"id": jobId, "error": err.Error()})
+		} else {
+			disposed = true
 		}
 	}()
 
@@ -334,6 +385,20 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		// settling time
 		time.Sleep(time.Duration(job.JobSettlingTimeMs) * time.Millisecond)
 	}
+	// fail closed: if the page never reached its own server through the proxy, the
+	// browser is not routing through it and nothing it fetched was vetted
+	if !proxy.SawOwnOrigin() {
+		err := errors.New("navigation did not pass through the egress proxy")
+		e.logger.Error(err, "egress proxy bypassed", log.KV{"id": jobId})
+		blocked, samples := proxy.Blocked()
+		return &JobResult{
+			ElapsedTime:     time.Since(start).Seconds(),
+			Success:         false,
+			Error:           err,
+			BlockedRequests: blocked,
+			BlockedSamples:  samples,
+		}
+	}
 	pdf, err := page.PDF(job.ToPDFOptions())
 	var buf []byte = nil
 	if err == nil {
@@ -341,11 +406,13 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}
 	elapsed := time.Since(start)
 	result := &JobResult{
-		ElapsedTime: elapsed.Seconds(),
-		Success:     err == nil,
-		Output:      buf,
-		Error:       err,
+		ElapsedTime:        elapsed.Seconds(),
+		Success:            err == nil,
+		Output:             buf,
+		Error:              err,
+		EgressSawOwnOrigin: proxy.SawOwnOrigin(),
 	}
+	result.BlockedRequests, result.BlockedSamples = proxy.Blocked()
 
 	if err == nil {
 		e.logger.Info(fmt.Sprintf("finished job in %f seconds", result.ElapsedTime), log.KV{"id": jobId, "size": len(result.Output), "elapsedTime": result.ElapsedTime})
@@ -380,8 +447,8 @@ func (e *Engine) connectBrowser() (*rod.Browser, error) {
 		if err != nil {
 			return nil, err
 		}
-		b := rod.New().ControlURL(u).Context(e.ctx)
-		if err := b.Connect(); err != nil {
+		b, err := e.connectChecked(u)
+		if err != nil {
 			return nil, err
 		}
 		e.metrics.Browsers.Inc()
@@ -392,22 +459,52 @@ func (e *Engine) connectBrowser() (*rod.Browser, error) {
 	url := e.launcherURL
 	e.launcherMx.Unlock()
 
-	b := rod.New().ControlURL(url).Context(e.ctx)
-	if err := b.Connect(); err == nil {
+	b, err := e.connectChecked(url)
+	if err == nil {
 		e.metrics.Browsers.Inc()
 		return b, nil
 	}
+	if errors.Is(err, errProcessProxy) {
+		return nil, err
+	}
 
 	// The shared Chrome may have died; relaunch it once and retry.
-	url, err := e.relaunchSharedBrowser(url)
+	url, err = e.relaunchSharedBrowser(url)
 	if err != nil {
 		return nil, err
 	}
-	b = rod.New().ControlURL(url).Context(e.ctx)
-	if err := b.Connect(); err != nil {
+	b, err = e.connectChecked(url)
+	if err != nil {
 		return nil, err
 	}
 	e.metrics.Browsers.Inc()
+	return b, nil
+}
+
+var errProcessProxy = errors.New("browser runs with a process-wide proxy setting")
+
+// connectChecked connects to the browser at url and refuses it if it runs with a
+// process-wide proxy: that could carry traffic the per-job egress proxy never sees.
+// The connection is dropped on failure without closing the (possibly shared) browser.
+func (e *Engine) connectChecked(url string) (*rod.Browser, error) {
+	ctx, cancel := context.WithCancel(e.ctx)
+	context.AfterFunc(e.ctx, cancel)
+	b := rod.New().ControlURL(url).Context(ctx)
+	if err := b.Connect(); err != nil {
+		cancel()
+		return nil, err
+	}
+	cl, err := proto.BrowserGetBrowserCommandLine{}.Call(b)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("reading browser command line: %w", err)
+	}
+	for _, a := range cl.Arguments {
+		if strings.HasPrefix(a, "--proxy-server") || strings.HasPrefix(a, "--proxy-pac-url") || strings.HasPrefix(a, "--no-proxy-server") {
+			cancel()
+			return nil, errProcessProxy
+		}
+	}
 	return b, nil
 }
 

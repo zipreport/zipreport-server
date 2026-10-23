@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"zipreport-server/internal/apiserver"
+	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -80,6 +81,16 @@ func (z *ZipReport) Build(appName string) {
 	if cfg.ZipReport.EnableHttpDebugging {
 		zptEngine.EnableHttpDebugging()
 	}
+	policy := egress.Policy{ReservedPorts: []int{cfg.ApiServer.Port}}
+	if cfg.ZipReport.EnableMetrics {
+		policy.ReservedPorts = append(policy.ReservedPorts, cfg.Prometheus.Port)
+	}
+	for _, s := range cfg.ZipReport.EgressAllow {
+		rule, err := egress.ParseRule(s) // validated in cfg.Validate()
+		z.AbortFatal(err)
+		policy.Allow = append(policy.Allow, rule)
+	}
+	zptEngine.SetEgressPolicy(policy)
 	// register engine destructor to release browsers and ephemeral servers on shutdown
 	blueprint.RegisterDestructor(func() error {
 		zptEngine.Shutdown()

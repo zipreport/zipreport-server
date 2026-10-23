@@ -3,10 +3,12 @@ package internal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
 	"zipreport-server/internal/apiserver"
+	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/metrics"
 	"zipreport-server/pkg/render"
 
@@ -40,13 +42,14 @@ var placeholderAuthSecrets = []string{
 }
 
 type ZipReportConfig struct {
-	ReadTimeoutSeconds   int  `json:"readTimeoutSeconds"`
-	WriteTimeoutSeconds  int  `json:"writeTimeoutSeconds"`
-	EnableConsoleLogging bool `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
-	EnableHttpDebugging  bool `json:"enableHttpDebugging"`
-	EnableMetrics        bool `json:"enableMetrics"` // Enable Prometheus endpoint
-	Concurrency          int  `json:"concurrency"`   // Concurrent browser instances
-	BaseHttpPort         int  `json:"baseHttpPort"`  // Internal HTTP server base port
+	ReadTimeoutSeconds   int      `json:"readTimeoutSeconds"`
+	WriteTimeoutSeconds  int      `json:"writeTimeoutSeconds"`
+	EnableConsoleLogging bool     `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
+	EnableHttpDebugging  bool     `json:"enableHttpDebugging"`
+	EnableMetrics        bool     `json:"enableMetrics"` // Enable Prometheus endpoint
+	Concurrency          int      `json:"concurrency"`   // Concurrent browser instances
+	BaseHttpPort         int      `json:"baseHttpPort"`  // Internal HTTP server base port
+	EgressAllow          []string `json:"egressAllow"`   // CIDRs or exact host:port a rendered page may reach beyond public addresses
 }
 
 type Config struct {
@@ -64,6 +67,7 @@ func NewZipReportConfig() *ZipReportConfig {
 		EnableMetrics:        false,
 		Concurrency:          render.DefaultConcurrency,
 		BaseHttpPort:         render.DefaultBasePort,
+		EgressAllow:          []string{},
 	}
 }
 
@@ -79,6 +83,11 @@ func (c *ZipReportConfig) Validate() error {
 	}
 	if c.BaseHttpPort < 1024 {
 		return errors.New("baseHttpPort must be greater than 1024")
+	}
+	for i, s := range c.EgressAllow {
+		if _, err := egress.ParseRule(s); err != nil {
+			return fmt.Errorf("zipReport.egressAllow[%d]: %w", i, err)
+		}
 	}
 	return nil
 }

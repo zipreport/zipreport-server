@@ -55,6 +55,10 @@ type JobResult struct {
 	Success     bool
 	Output      []byte
 	Error       error
+
+	BlockedRequests    int      // requests the egress proxy refused
+	BlockedSamples     []string // distinct refused destinations, bounded
+	EgressSawOwnOrigin bool     // the page reached its own server through the proxy
 }
 
 var ValidPageSizes = []string{PageA3, PageA4, PageA5, PageLetter, PageLegal, PageTabloid}
