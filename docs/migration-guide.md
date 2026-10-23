@@ -50,7 +50,7 @@ Version 2.3.0 introduced a complete configuration system overhaul. The server no
     "tlsCert": "/path/to/cert.pem",
     "tlsKey": "/path/to/key.pem",
     "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "your-secret-key",
+    "authTokenSecret": "<generate: openssl rand -hex 32>",
     "defaultSecurityHeaders": true
   },
   "zipReport": {
@@ -103,7 +103,7 @@ Create a new file `config/config.json` based on your current command-line argume
     "host": "0.0.0.0",
     "port": 6543,
     "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "my-secret",
+    "authTokenSecret": "<generate: openssl rand -hex 32>",
     "defaultSecurityHeaders": true
   },
   "zipReport": {
@@ -120,7 +120,7 @@ Use the built-in sample config generator:
 ./zipreport-server -sample-config > config/config.json
 ```
 
-Then edit the file with your specific values.
+Then edit the file with your specific values. The generated file has an empty `apiServer.authTokenSecret` and the server will not start until you set it (or `ZIPREPORT_API_KEY`) to a secret of at least 32 characters, e.g. the output of `openssl rand -hex 32`.
 
 #### Step 3: Update Startup Scripts
 
@@ -282,7 +282,7 @@ Your existing configuration files will continue to work without modification. Ho
    ```json
    {
      "apiServer": {
-       "authTokenSecret": "your-secure-token-here"
+       "authTokenSecret": "<generate: openssl rand -hex 32>"
      }
    }
    ```

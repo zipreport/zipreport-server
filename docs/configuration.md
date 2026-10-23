@@ -17,7 +17,7 @@ The following environment variables can be used to override configuration file v
 
 Example:
 ```shell
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:latest
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:latest
 ```
 
 ## Configuration Sections
@@ -34,7 +34,7 @@ Configuration for the HTTP API server that handles rendering requests.
 | `writeTimeout`                   | integer | `600`                     | Maximum duration in seconds for writing the response.                                          |
 | `debug`                          | boolean | `false`                   | Enable debug mode for additional logging and diagnostic information.                           |
 | `authTokenHeader`                | string  | `"X-Auth-Key"`            | HTTP header that carries the authentication token.                                             |
-| `authTokenSecret`                | string  | `"my-super-secret-token"` | Secret key used for authentication token validation. Change this in production.                |
+| `authTokenSecret`                | string  | `""` | Required, at least 32 characters, no leading/trailing whitespace. The server refuses to start if it is empty, too short, or a placeholder from these docs. `ZIPREPORT_API_KEY` overrides it. Generate with `openssl rand -hex 32`. |
 | `defaultSecurityHeaders`         | boolean | `true`                    | Enable default security headers in HTTP responses.                                             |
 | `trustedProxies`                 | array   | `[]`                      | List of trusted proxy IP addresses or CIDR ranges for X-Forwarded-For header processing.       |
 | `tlsEnable`                      | boolean | `false`                   | Enable TLS/HTTPS for the API server.                                                           |
@@ -118,7 +118,7 @@ Configuration for application logging.
   "apiServer": {
     "host": "0.0.0.0",
     "port": 6543,
-    "authTokenSecret": "your-secure-random-token-here"
+    "authTokenSecret": "<generate: openssl rand -hex 32>"
   },
   "zipReport": {
     "concurrency": 4
@@ -141,7 +141,7 @@ Configuration for application logging.
     "tlsCert": "/path/to/cert.pem",
     "tlsKey": "/path/to/key.pem",
     "tlsMinVersion": "1.2",
-    "authTokenSecret": "your-secure-random-token-here"
+    "authTokenSecret": "<generate: openssl rand -hex 32>"
   }
 }
 ```

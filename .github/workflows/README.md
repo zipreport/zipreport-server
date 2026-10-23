@@ -101,7 +101,7 @@ make test-integration
 docker build -t zipreport-server:local .
 
 # Run container with API key
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:local
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:local
 
 # Or with custom config
 docker run -p 6543:6543 -v $(pwd)/config:/app/config zipreport-server:local

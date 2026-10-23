@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Bumped Go toolchain from 1.26.4 to 1.27.3, resolving 16 reachable standard-library advisories (net/http, crypto/tls, crypto/x509, net/url, net/textproto, encoding/asn1); golang.org/x/net is now v0.60.0
 - `tlsKeyPasswordEnvVar` is no longer cleared after it is read (Blueprint v0.12+), so Chromium child processes inherit it; prefer `tlsKeyPasswordFile`
+- **Breaking:** the server refuses to start when `authTokenSecret` / `ZIPREPORT_API_KEY` is empty, shorter than 32 characters, padded with whitespace, or a placeholder value published in earlier sample configs and docs. The Docker image no longer ships a usable token
+- `NewApiServer` returns an error instead of disabling authentication when given an empty secret
+- Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
 
 ### Changed
 - Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0

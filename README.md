@@ -13,6 +13,14 @@ ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML
 previous
 versions.
 
+### Upgrading to the next release
+
+**Breaking change — API secret requirements.** The server now refuses to start when `authTokenSecret` (or `ZIPREPORT_API_KEY`)
+is empty, shorter than 32 characters, padded with whitespace, or one of the placeholder values that appeared in earlier
+sample configs and docs. The Docker image no longer contains a usable secret. Generate one with `openssl rand -hex 32` and
+pass it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as it reaches
+the default branch.
+
 ### Upgrading to version 2.4.0
 
 **Breaking change — configuration format.** The `apiServer.options` block has been removed. Its keys are now set
@@ -22,8 +30,8 @@ directly on `apiServer`:
 // before (<= 2.3.x)                       // after (>= 2.4.0)
 "apiServer": {                             "apiServer": {
   "options": {                               "authTokenHeader": "X-Auth-Key",
-    "authTokenHeader": "X-Auth-Key",         "authTokenSecret": "your-secret",
-    "authTokenSecret": "your-secret",        "defaultSecurityHeaders": true
+    "authTokenHeader": "X-Auth-Key",         "authTokenSecret": "<generate: openssl rand -hex 32>",
+    "authTokenSecret": "<generate: openssl rand -hex 32>",        "defaultSecurityHeaders": true
     "defaultSecurityHeaders": "1"          }
   }
 }
@@ -139,7 +147,7 @@ zipreport-server performs header-based authentication using the token specified 
 The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, which takes precedence over the config file. This is useful for Docker deployments:
 
 ```shell
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.4.0
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:2.4.0
 ```
 
 Example:
@@ -157,7 +165,7 @@ Without authentication, requests will receive `401 Unauthorized`.
 
 ### Running with Docker
 
-Starting with version 2.3.0, zipreport-server uses a configuration file. The Docker image includes a default configuration, so you can run with just the `ZIPREPORT_API_KEY` environment variable for basic usage. For advanced configuration, mount a custom config file to `/app/config/config.json`.
+Starting with version 2.3.0, zipreport-server uses a configuration file. The Docker image includes a default configuration, so you can run with just the `ZIPREPORT_API_KEY` environment variable for basic usage. Without `ZIPREPORT_API_KEY` (or a mounted config with a compliant `authTokenSecret`), the container refuses to start. For advanced configuration, mount a custom config file to `/app/config/config.json`.
 
 **Multi-Platform Support**
 
@@ -179,7 +187,7 @@ Both variants are functionally identical and store the browser in rod's expected
 docker build . --tag zipreport-server:2.4.0
 
 # Run with API key (uses default config, HTTP only, no TLS)
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY=your-secret-key zipreport-server:2.4.0
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:2.4.0
 ```
 
 **Production Deployment with Custom Configuration**
@@ -191,7 +199,7 @@ Create a `config.json` file (see [config.sample.json](./config/config.sample.jso
   "apiServer": {
     "host": "",
     "port": 6543,
-    "authTokenSecret": "your-secure-random-token-here",
+    "authTokenSecret": "<generate: openssl rand -hex 32>",
     "defaultSecurityHeaders": true,
     "tlsEnable": false
   },
@@ -231,7 +239,7 @@ Update `config.json` to enable TLS:
     "tlsEnable": true,
     "tlsCert": "config/ssl/server.crt",
     "tlsKey": "config/ssl/server.key",
-    "authTokenSecret": "your-secure-random-token-here"
+    "authTokenSecret": "<generate: openssl rand -hex 32>"
   }
 }
 ```
