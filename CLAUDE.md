@@ -112,7 +112,7 @@ is sourced from different locations per architecture:
 
 ## Module & Dependencies
 
-Module: `zipreport-server` (Go 1.24.12)
+Module: `zipreport-server` (Go 1.27.3)
 
 Key dependencies: `gin-gonic/gin` (HTTP), `go-rod/rod` (Chrome automation), `oddbit-project/blueprint` (DI container +
 HTTP server provider), `prometheus/client_golang` (metrics), `stretchr/testify` (testing).

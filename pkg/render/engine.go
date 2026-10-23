@@ -17,6 +17,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/log"
 )
 
@@ -396,7 +397,7 @@ func (e *Engine) Shutdown() {
 		e.metrics.Browsers.Dec()
 		// In shared-launcher mode, the first Close() kills Chrome and
 		// subsequent calls fail; use non-panicking Close to handle this.
-		_ = p.Close()
+		_ = p.Context(blueprint.ShutdownContext()).Close()
 	})
 	e.ServerPool.Shutdown()
 }

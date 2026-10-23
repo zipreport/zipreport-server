@@ -5,6 +5,20 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Bumped Go toolchain from 1.26.4 to 1.27.3, resolving 16 reachable standard-library advisories (net/http, crypto/tls, crypto/x509, net/url, net/textproto, encoding/asn1); golang.org/x/net is now v0.60.0
+- `tlsKeyPasswordEnvVar` is no longer cleared after it is read (Blueprint v0.12+), so Chromium child processes inherit it; prefer `tlsKeyPasswordFile`
+
+### Changed
+- Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
+- Graceful stop now drains in-flight renders for up to 8 seconds (SIGINT/SIGTERM); the render engine is shut down after the API server stops accepting requests
+- Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
+- Default `log.callerSkipFrames` is now 3 (Blueprint default)
+- TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
+- Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
+
 ## [2.4.1]
 
 ### Changed

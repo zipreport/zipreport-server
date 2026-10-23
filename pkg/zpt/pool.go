@@ -5,6 +5,7 @@ import (
 	"sync"
 	"zipreport-server/pkg/monitor"
 
+	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/log"
 )
 
@@ -91,7 +92,7 @@ func (p *ServerPool) Shutdown() {
 	// shutdown all servers
 	for i, srv := range p.pool {
 		if srv != nil {
-			if srv.Shutdown(p.ctx) == nil {
+			if srv.Shutdown(blueprint.ShutdownContext()) == nil {
 				p.metrics.HttpServers.Dec()
 			}
 		}

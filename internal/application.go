@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"context"
+	"time"
+
 	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
@@ -10,6 +13,10 @@ import (
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
 )
+
+// ShutdownTimeout bounds all destructors together; it must stay below docker stop's
+// default 10s grace period (Dockerfile STOPSIGNAL SIGINT) or the drain is killed
+const ShutdownTimeout = 8 * time.Second
 
 type CliArgs struct {
 	ConfigFile   *string
@@ -39,6 +46,8 @@ func NewZipReport(args *CliArgs, logger *log.Logger) (*ZipReport, error) {
 }
 
 func (z *ZipReport) Build(appName string) {
+	blueprint.SetShutdownTimeout(ShutdownTimeout)
+
 	var err error
 	z.logger.Infof("initializing %s...", appName)
 
@@ -53,6 +62,7 @@ func (z *ZipReport) Build(appName string) {
 	// initialize logger
 	z.logger.Info("initializing Logging...")
 	z.AbortFatal(cfg.Logging.Validate())
+	z.AbortFatal(log.Configure(cfg.Logging))
 	z.logger, err = cfg.Logging.Logger()
 	z.AbortFatal(err)
 
@@ -60,7 +70,10 @@ func (z *ZipReport) Build(appName string) {
 	metrics := monitor.NewMetrics()
 
 	// initialize ZipReport engine
-	zptEngine := render.NewEngine(z.Context, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
+	// Blueprint cancels z.Context before destructors run; the engine must outlive it so the API
+	// destructor can drain in-flight renders. It is cancelled by the engine destructor, which runs last.
+	engineCtx, engineCancel := context.WithCancel(context.WithoutCancel(z.Context))
+	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
 	if cfg.ZipReport.EnableConsoleLogging {
 		zptEngine.EnableConsoleLog()
 	}
@@ -70,6 +83,7 @@ func (z *ZipReport) Build(appName string) {
 	// register engine destructor to release browsers and ephemeral servers on shutdown
 	blueprint.RegisterDestructor(func() error {
 		zptEngine.Shutdown()
+		engineCancel()
 		return nil
 	})
 
@@ -89,7 +103,7 @@ func (z *ZipReport) Build(appName string) {
 
 		// register prometheus destructor
 		blueprint.RegisterDestructor(func() error {
-			_ = prom.Shutdown(z.Context)
+			_ = prom.Shutdown(blueprint.ShutdownContext())
 			return nil
 		})
 	}
@@ -103,7 +117,7 @@ func (z *ZipReport) Build(appName string) {
 func (z *ZipReport) Start() {
 	// register apiServer destructor
 	blueprint.RegisterDestructor(func() error {
-		_ = z.api.Shutdown(z.Context)
+		_ = z.api.Shutdown(blueprint.ShutdownContext())
 		return nil
 	})
 

@@ -95,7 +95,7 @@ Configuration for application logging.
 | `includeTimestamp` | boolean | `true`                                  | Include timestamp in log entries.                                   |
 | `includeCaller`    | boolean | `false`                                 | Include caller information (file and line number) in log entries.   |
 | `includeHostname`  | boolean | `true`                                  | Include hostname in log entries.                                    |
-| `callerSkipFrames` | integer | `2`                                     | Number of stack frames to skip when determining caller information. |
+| `callerSkipFrames` | integer | `3`                                     | Number of stack frames to skip when determining caller information. |
 | `timeFormat`       | string  | `"2006-01-02T15:04:05.999999999Z07:00"` | Go time format string for timestamps (RFC3339 with nanoseconds).    |
 | `noColor`          | boolean | `false`                                 | Disable colored output in console logs.                             |
 | `outputToFile`     | boolean | `false`                                 | Enable logging to a file in addition to console.                    |
@@ -194,8 +194,10 @@ Configuration for application logging.
 2. **TLS Certificates**: When enabling TLS, ensure certificates are properly secured with appropriate file permissions (
    e.g., 0600 for private keys).
 
-3. **TLS Key Passwords**: Prefer using `tlsKeyPasswordEnvVar` or `tlsKeyPasswordFile` over `tlsKeyPassword` to avoid
-   storing passwords in the configuration file.
+3. **TLS Key Passwords**: Prefer using `tlsKeyPasswordFile` over `tlsKeyPassword` to avoid
+   storing passwords in the configuration file. `tlsKeyPasswordEnvVar` is read but no longer cleared from the
+   environment, and the Chromium processes this server launches inherit the environment, so the password is visible
+   to them.
 
 4. **Trusted Proxies**: Only add verified proxy IP addresses to `trustedProxies` to prevent IP spoofing attacks.
 
@@ -204,8 +206,9 @@ Configuration for application logging.
 
 ## Environment Variables
 
-Configuration values can be overridden using environment variables. The TLS key password specifically supports
-`tlsKeyPasswordEnvVar` for secure password management.
+Configuration values can be overridden using environment variables. The TLS key password supports
+`tlsKeyPasswordEnvVar`, but prefer `tlsKeyPasswordFile`: the variable is not cleared from the environment after it is
+read, so Chromium child processes inherit it.
 
 ## Loading Configuration
 
