@@ -3,7 +3,7 @@ FROM cgr.dev/chainguard/wolfi-base
 # Go toolchain + git for module fetches, plus Chromium runtime libraries.
 # Package set mirrors the runtime Dockerfile.
 RUN apk add --no-cache \
-    go-1.26 \
+    go-1.27 \
     git \
     libnss \
     libudev \
@@ -28,7 +28,7 @@ RUN apk add --no-cache \
     font-noto-cjk \
     tzdata
 
-ENV PATH="/usr/lib/go-1.26/bin:${PATH}"
+ENV PATH="/usr/lib/go-1.27/bin:${PATH}"
 
 WORKDIR /app
 
