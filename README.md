@@ -63,6 +63,10 @@ The daemon also relies on the creation of ephemeral http servers on localhost as
 - With `js_event=false`, the PDF is printed after page load plus the fixed `settling_time`. A slower remote asset
   can therefore be missing from the output with no error. Reports that depend on remote assets should use
   `js_event=true` and signal `zpt-view-ready` once their assets have loaded, or raise `settling_time`.
+- Chrome runs with site isolation enabled, which separates cross-site frames into their own processes. This protects
+  only when Chrome's sandbox is on (bare-metal, non-container runs). In containers Chrome runs with `--no-sandbox`, so
+  keeping the bundled Chrome version current is the protection there. Site isolation also runs more renderer processes
+  per job, so container memory limits may need raising.
 - `ignore_ssl_errors` applies only to the report page's own frames. Requests made by service workers or web
   workers are always certificate-checked.
 
@@ -182,11 +186,9 @@ Docker images are built for both `linux/amd64` and `linux/arm64`. This enables r
 - Apple Silicon Macs — M1/M2/M3/M4 (arm64)
 - ARM64 cloud instances — AWS Graviton, Ampere, etc.
 
-The correct image is selected automatically by Docker based on the host architecture. Chromium is sourced from different locations depending on the platform:
-- **amd64**: Google's Chromium snapshots (same source as go-rod's default)
-- **arm64**: Playwright CDN (arm64 Chromium builds)
+The correct image is selected automatically by Docker based on the host architecture. Both architectures use the same pinned Chrome for Testing build, downloaded from `storage.googleapis.com/chrome-for-testing-public`.
 
-Both variants are functionally identical and store the browser in rod's expected cache location.
+Both variants are functionally identical.
 
 **Quick Start**
 
@@ -318,15 +320,15 @@ make
 
 Binaries will be created in `./bin/`:
 - `bin/zipreport-server` - Main server binary
-- `bin/browser-update` - Browser download utility (fetches Chromium for the current platform)
+- `bin/browser-update` - Browser download utility (fetches the pinned Chrome for Testing build for the current platform)
 
-**Updating Chromium Versions**
+**Updating the Chrome Version**
 
-The Chromium revision constants are defined in `pkg/browser/browser.go`:
-- `Revision` — Chromium snapshot revision for amd64 (must match rod's `RevisionDefault` so the launcher finds it in the cache)
-- `RevisionPlaywright` — Playwright CDN revision for arm64 Linux builds
-
-To update the bundled Chromium version, change these constants and rebuild. The `browser-update` command will download the new version on next run.
+The pinned Chrome for Testing build is the `Version` constant in `pkg/browser/browser.go`. To bump it, set it to the
+Stable entry of [`last-known-good-versions.json`](https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json),
+update the literal URLs expected in `test/browser_test.go`, and rebuild. The cache directory is named after the version
+(`~/.cache/rod/browser/chrome-<Version>`), so a bump never reuses a stale binary. The server always uses this pinned
+build; the `bin=` option of rod's `rod` environment variable is ignored.
 
 **Generate Self-Signed Certificates**
 

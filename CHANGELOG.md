@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `NewApiServer` returns an error instead of disabling authentication when given an empty secret
 - Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
 - Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs
+- The bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it)
 
 ### Changed
 - Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
@@ -22,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default `log.callerSkipFrames` is now 3 (Blueprint default)
 - TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
 - The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
+- Cross-site iframes now run out of process. Their `console.log` output, including `zpt-view-ready`, is no longer seen by the engine, so a report that signals readiness from a cross-site iframe will hit the JS timeout; signal from the top-level page instead
+- The `bin=` option of the `rod` environment variable is ignored; the browser is always the pinned build, resolved once at startup
+- Expect higher memory use per job (site isolation runs more renderer processes)
+- Podman and Kubernetes containers are detected like Docker (`--no-sandbox`, shared browser)
 - Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
 
 ## [2.4.1]

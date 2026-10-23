@@ -60,7 +60,7 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
   `ServerPool` (concurrent slot management)
 - **`pkg/monitor/`** — Prometheus metrics definitions (counters, gauges, histogram)
 - **`pkg/metrics/`** — Prometheus HTTP server configuration
-- **`pkg/browser/`** — Local Chromium downloader with arm64 Linux support (replaces rod's built-in downloader)
+- **`pkg/browser/`** — Chrome for Testing downloader (pinned version, all platforms; replaces rod's built-in downloader)
 
 ### Concurrency Model
 
@@ -104,11 +104,8 @@ containers (detected via `/.dockerenv` file). The `browser-update` tool download
 build time.
 
 **Multi-platform support**: Docker images are built for `linux/amd64` and `linux/arm64`. The builder stage uses
-`--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chromium
-is sourced from different locations per architecture:
-
-- **amd64**: Google's Chromium snapshots (matches rod's `RevisionDefault`)
-- **arm64**: Playwright CDN (rod's built-in downloader lacks arm64 Linux builds)
+`--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chrome
+is the same pinned Chrome for Testing build (`browser.Version`) on both architectures.
 
 ## Module & Dependencies
 

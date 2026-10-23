@@ -204,6 +204,11 @@ Configuration for application logging.
 5. **File Permissions**: Log files will be created with permissions specified in `log.filePermissions`. The default (
    420 = 0644) makes files readable by all users but writable only by the owner.
 
+6. **Browser**: The browser is always the pinned Chrome for Testing build (`browser.Version`); the `bin=` option of rod's
+   `rod` environment variable is no longer honoured. Chrome runs with site isolation enabled, which starts more renderer
+   processes per job, so container memory limits may need raising. Site isolation only contains a renderer exploit when
+   Chrome's sandbox is on; in containers Chrome runs with `--no-sandbox`.
+
 ## Environment Variables
 
 Configuration values can be overridden using environment variables. The TLS key password supports
