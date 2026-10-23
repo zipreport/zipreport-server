@@ -82,7 +82,8 @@ Configuration for the ZipReport rendering engine.
 | `enableHttpDebugging`  | boolean | `false` | Enable HTTP request/response debugging for the rendering engine.                           |
 | `enableMetrics`        | boolean | `false` | Enable metrics collection for rendering operations.                                        |
 | `concurrency`          | integer | `8`     | Number of concurrent browser instances for parallel rendering.                             |
-| `baseHttpPort`         | integer | `42000` | Base port number for browser instances. Each instance uses baseHttpPort + instance number. |
+| `baseHttpPort`         | integer | `42000` | Base port number for browser instances. Each instance uses baseHttpPort + instance number. On Linux, reserve the range with `net.ipv4.ip_local_reserved_ports` so egress proxies do not take its ports. |
+| `egressAllow`          | array of strings | `[]` | CIDRs or exact `host:port` entries a rendered page may reach in addition to public addresses, e.g. `["10.20.0.0/16", "assets.intranet:443"]`. A bare IP needs `/32` or `/128`. Entries can never open the render server ports, the proxy, the API or the metrics port on local addresses. |
 
 ### log
 

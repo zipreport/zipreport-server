@@ -21,6 +21,10 @@ sample configs and docs. The Docker image no longer contains a usable secret. Ge
 pass it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as it reaches
 the default branch.
 
+**Breaking change — HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY`. All of a
+job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend on
+an outbound proxy lose external assets (CDN fonts, scripts, images). Chaining to an upstream proxy is a deferred follow-up.
+
 ### Upgrading to version 2.4.0
 
 **Breaking change — configuration format.** The `apiServer.options` block has been removed. Its keys are now set
@@ -67,6 +71,24 @@ The daemon also relies on the creation of ephemeral http servers on localhost as
   only when Chrome's sandbox is on (bare-metal, non-container runs). In containers Chrome runs with `--no-sandbox`, so
   keeping the bundled Chrome version current is the protection there. Site isolation also runs more renderer processes
   per job, so container memory limits may need raising.
+- Each job's browser traffic, loopback included, goes through a per-job egress proxy. It resolves names itself and
+  refuses a destination if any resolved address is loopback, link-local, private, otherwise non-public, or belongs to
+  a local interface. Public hosts, the job's own server and hosts permitted by `zipReport.egressAllow` (CIDRs or
+  exact `host:port`) work. No `egressAllow` entry can open another job's server, the proxy, the API or the metrics
+  port on a local address. If the page does not reach its own server through the proxy, the job fails.
+- Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy; they are refused
+  and counted in the "blocked network requests" warning logged per job.
+- Residual risks of the egress proxy:
+  - **WebRTC: pages can send STUN binding requests over UDP to arbitrary host:port, including internal addresses,
+    outside the egress proxy (Chrome 156 ignores --force-webrtc-ip-handling-policy here). Only a network-level egress
+    policy (Docker network rules, Kubernetes NetworkPolicy, host firewall) closes this.**
+  - DNS prefetch and preconnect resolve names through the server's resolver (the query leaks, nothing is fetched),
+    and the proxy's own lookups are a DNS channel for data leaving the server.
+  - AIA certificate fetches and WebTransport (HTTP/3 over UDP) may not use the proxy.
+  - Strict deployments still need a network-layer egress policy.
+- The proxy listens on an ephemeral `127.0.0.1` port. On Linux the default ephemeral range (32768-60999) overlaps
+  `baseHttpPort` (42000+); reserve the render ports with
+  `sysctl net.ipv4.ip_local_reserved_ports=<baseHttpPort>-<baseHttpPort+concurrency-1>` to avoid bind clashes.
 - `ignore_ssl_errors` applies only to the report page's own frames. Requests made by service workers or web
   workers are always certificate-checked.
 

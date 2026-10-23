@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
 - Bumped Go toolchain from 1.26.4 to 1.27.3, resolving 16 reachable standard-library advisories (net/http, crypto/tls, crypto/x509, net/url, net/textproto, encoding/asn1); golang.org/x/net is now v0.60.0
 - `tlsKeyPasswordEnvVar` is no longer cleared after it is read (Blueprint v0.12+), so Chromium child processes inherit it; prefer `tlsKeyPasswordFile`
 - **Breaking:** the server refuses to start when `authTokenSecret` / `ZIPREPORT_API_KEY` is empty, shorter than 32 characters, padded with whitespace, or a placeholder value published in earlier sample configs and docs. The Docker image no longer ships a usable token
@@ -17,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it)
 
 ### Changed
+- New `zipReport.egressAllow` (CIDRs or exact `host:port`) to permit intranet asset hosts through the egress proxy
+- **Breaking:** rendered content no longer uses the container's `HTTP_PROXY`/`HTTPS_PROXY`; the per-job proxy dials directly, so deployments that depend on an outbound proxy lose external assets (chaining is a deferred follow-up)
 - Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
 - Graceful stop now drains in-flight renders for up to 8 seconds (SIGINT/SIGTERM); the render engine is shut down after the API server stops accepting requests
 - Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
