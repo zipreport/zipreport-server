@@ -24,6 +24,9 @@ import (
 	"github.com/oddbit-project/blueprint/log"
 )
 
+// ErrJobTimeout is returned when the job deadline expires while waiting for the page.
+var ErrJobTimeout = errors.New("render job timed out")
+
 const DefaultConcurrency = 8
 const DefaultBasePort = 22000
 
@@ -279,30 +282,32 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		done := make(chan struct{})
 		closed := atomic.Int32{}
 
+		// subscribe before navigating so an early signal is not dropped
+		waitEvents := page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+			if e.consoleLogging {
+				// log JS console output
+				e.logConsoleArgs(page, evt.Args, jobId)
+			}
+
+			if len(evt.Args) > 0 {
+				if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
+					e.logger.Debug("console message received", log.KV{"id": jobId})
+					if closed.CompareAndSwap(0, 1) {
+						close(done)
+					}
+				}
+			}
+		},
+			func(evt *proto.LogEntryAdded) {
+				if e.consoleLogging && evt.Entry != nil {
+					msg, _ := json.Marshal(evt.Entry)
+					e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
+				}
+			})
 		evtWg.Add(1)
 		go func() {
 			defer evtWg.Done()
-			page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				if e.consoleLogging {
-					// log JS console output
-					e.logConsoleArgs(page, evt.Args, jobId)
-				}
-
-				if len(evt.Args) > 0 {
-					if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
-						e.logger.Debug("console message received", log.KV{"id": jobId})
-						if closed.CompareAndSwap(0, 1) {
-							close(done)
-						}
-					}
-				}
-			},
-				func(evt *proto.LogEntryAdded) {
-					if e.consoleLogging && evt.Entry != nil {
-						msg, _ := json.Marshal(evt.Entry)
-						e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
-					}
-				})()
+			waitEvents()
 		}()
 
 		// JS timeout procedure
@@ -311,7 +316,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		})
 		defer cancel.Stop()
 
-		wait := page.WaitEvent(&proto.PageLoadEventFired{})
+		waitLoadEvt := page.WaitEvent(&proto.PageLoadEventFired{})
 		err = page.Navigate(url)
 		if err != nil {
 			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
@@ -332,10 +337,14 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 				Error:       err,
 			}
 		}
-		wait()
+		waitLoadEvt()
 		select {
 		case <-done:
 			break
+		case <-pageCtx.Done():
+			err = fmt.Errorf("%w: %w", ErrJobTimeout, pageCtx.Err())
+			e.logger.Error(err, "job timed out waiting for console message", log.KV{"id": jobId})
+			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
 		case <-timeout:
 			e.logger.Warn("waiting for console message timed out", log.KV{"id": jobId})
 		}
@@ -344,18 +353,19 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 
 		if e.consoleLogging {
 			// log console & browser logger
+			waitEvents := page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
+				e.logConsoleArgs(page, evt.Args, jobId)
+			},
+				func(evt *proto.LogEntryAdded) {
+					if evt.Entry != nil {
+						msg, _ := json.Marshal(evt.Entry)
+						e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
+					}
+				})
 			evtWg.Add(1)
 			go func() {
 				defer evtWg.Done()
-				page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-					e.logConsoleArgs(page, evt.Args, jobId)
-				},
-					func(evt *proto.LogEntryAdded) {
-						if evt.Entry != nil {
-							msg, _ := json.Marshal(evt.Entry)
-							e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
-						}
-					})()
+				waitEvents()
 			}()
 		}
 
@@ -381,7 +391,13 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			}
 		}
 		// settling time
-		time.Sleep(time.Duration(job.JobSettlingTimeMs) * time.Millisecond)
+		select {
+		case <-time.After(time.Duration(job.JobSettlingTimeMs) * time.Millisecond):
+		case <-pageCtx.Done():
+			err = fmt.Errorf("%w: %w", ErrJobTimeout, pageCtx.Err())
+			e.logger.Error(err, "job timed out during settling time", log.KV{"id": jobId})
+			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
+		}
 	}
 	// fail closed: if the page never reached its own server through the proxy, the
 	// browser is not routing through it and nothing it fetched was vetted
