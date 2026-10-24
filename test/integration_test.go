@@ -66,6 +66,29 @@ func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.
 	return srv, engine, ctx, cancel
 }
 
+// setupAPIServer builds the API without a render engine, for tests that never reach
+// rendering (auth and request validation); it needs no browser.
+func setupAPIServer(t *testing.T) *httpserver.Server {
+	logConfig := log.NewDefaultConfig()
+	logConfig.Level = "error"
+	require.NoError(t, log.Configure(logConfig))
+	logger := log.New("test")
+
+	cfg := &apiserver.ApiServerConfig{
+		ServerConfig:           *httpserver.NewServerConfig(),
+		AuthTokenHeader:        "X-Auth-Key",
+		AuthTokenSecret:        testAuthToken,
+		DefaultSecurityHeaders: true,
+	}
+	cfg.Host = "localhost"
+	cfg.Port = 0
+
+	srv, err := apiserver.NewApiServer(cfg, nil, sharedMetrics, logger)
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+	return srv
+}
+
 // createMultipartRequest creates a multipart form request with a file upload
 func createMultipartRequest(t *testing.T, zipPath string, fields map[string]string) *http.Request {
 	body := &bytes.Buffer{}
@@ -134,9 +157,7 @@ func TestRenderEndpoint_Success(t *testing.T) {
 
 // TestRenderEndpoint_MissingAuth tests authentication requirement
 func TestRenderEndpoint_MissingAuth(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -150,14 +171,11 @@ func TestRenderEndpoint_MissingAuth(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidAuth tests invalid authentication token
 func TestRenderEndpoint_InvalidAuth(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -173,14 +191,11 @@ func TestRenderEndpoint_InvalidAuth(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_MissingFile tests missing report file
 func TestRenderEndpoint_MissingFile(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -195,14 +210,11 @@ func TestRenderEndpoint_MissingFile(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidPageSize tests invalid page size validation
 func TestRenderEndpoint_InvalidPageSize(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -216,14 +228,11 @@ func TestRenderEndpoint_InvalidPageSize(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidMarginStyle tests invalid margin style validation
 func TestRenderEndpoint_InvalidMarginStyle(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -237,14 +246,11 @@ func TestRenderEndpoint_InvalidMarginStyle(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_NegativeMargins tests negative margin validation
 func TestRenderEndpoint_NegativeMargins(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -262,7 +268,6 @@ func TestRenderEndpoint_NegativeMargins(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_CustomMargins tests custom margin values

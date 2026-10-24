@@ -18,9 +18,7 @@ import (
 
 // TestError_CorruptZip tests that a corrupt ZIP file returns 400
 func TestError_CorruptZip(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "corrupt.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -34,7 +32,6 @@ func TestError_CorruptZip(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code,
 		"Corrupt ZIP should return 400 Bad Request")
-	_ = ctx
 }
 
 // TestError_MissingIndexFile tests that a ZIP missing the default index returns 500
@@ -98,9 +95,7 @@ func TestError_ZeroTimeout(t *testing.T) {
 
 // TestError_EmptyUpload tests that an empty file upload returns 400
 func TestError_EmptyUpload(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -124,14 +119,11 @@ func TestError_EmptyUpload(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code,
 		"Empty file upload should return 400 Bad Request")
-	_ = ctx
 }
 
 // TestError_NoFileField tests that a request without the report field returns 400
 func TestError_NoFileField(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -148,7 +140,6 @@ func TestError_NoFileField(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code,
 		"Missing report field should return 400 Bad Request")
-	_ = ctx
 }
 
 // TestRender_ClosesUploadedFile tests that the uploaded report file handle is
@@ -171,9 +162,7 @@ func TestRender_ClosesUploadedFile(t *testing.T) {
 	require.NoError(t, zw.Close())
 	require.NoError(t, f.Close())
 
-	srv, engine, _, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	countFDs := func() int {
 		entries, err := os.ReadDir("/proc/self/fd")
