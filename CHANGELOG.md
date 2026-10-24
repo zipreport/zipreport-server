@@ -7,9 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0]
+
+This release contains breaking changes; see the upgrade notes in `docs/migration-guide.md` ("Upgrading from 2.4.x to 3.0.0"). Entries marked **Breaking:** need action on upgrade.
+
+### Added
+- New `zipReport.egressAllow` (CIDRs or exact `host:port`) to permit intranet asset hosts through the egress proxy
+- `enableHttpDebugging` now works (it was a no-op): configs that already set it to `true` will start emitting per-request Info lines
+
+### Changed
+- **Breaking:** rendered content no longer uses the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored); the per-job proxy dials directly, so deployments that depend on an outbound proxy lose external assets (chaining is a deferred follow-up). A Chrome started with a process-wide proxy switch (`--proxy-server`, `--proxy-pac-url`, `--no-proxy-server`) is refused
+- **Breaking:** a failure to start the API or metrics listener (for example the port is in use) now exits the process with a non-zero status; previously it was logged and the process kept running
+- **Breaking:** `timeout_job` now includes time spent waiting for a free render slot; a disconnected client cancels its job (the job fails with `ErrJobCancelled`); the API write deadline is re-armed after the upload to `timeout_job` + the configured `writeTimeout`. Known limits: a client that half-closes its socket after sending its request cancels its own job, and disconnect detection needs the request body to be read to EOF
+- **Breaking:** the API `writeTimeout` now defaults to 720s (and the shipped sample changes from 600 to 720) so a maximal render plus upload and queue time completes; previously the default was 60s when omitted, which cut renders over 60s. `readTimeout` defaults to 600s, `0` means default, and new 15s header and 60s idle timeouts apply. Explicit timeouts keep their values
+- **Breaking:** the default `baseHttpPort` is now 22000 (was 42000). The old default lies inside the Linux ephemeral port range (32768-60999), so outbound sockets, including the per-job egress proxy's, could take a report port and fail the job. Configs that set `baseHttpPort` explicitly (including 42000) keep their value and log a startup warning when the render ports overlap the ephemeral range. Ephemeral report servers now also bind synchronously and skip a held port in favour of the next slot
+- **Breaking:** `zipReport.readTimeoutSeconds` and `zipReport.writeTimeoutSeconds` now apply to the per-job report servers (they were ignored before)
+- **Breaking:** the bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it). Expect higher memory use per job (site isolation runs more renderer processes). Cross-site iframes now run out of process, so their `console.log` output, including `zpt-view-ready`, is no longer seen by the engine; a report that signals readiness from a cross-site iframe will hit the JS timeout, so signal from the top-level page instead
+- The `bin=` option of the `rod` environment variable is ignored; the browser is always the pinned build, resolved once at startup
+- Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
+- Graceful stop now drains in-flight renders for up to 8 seconds (SIGINT/SIGTERM); the render engine is shut down after the API server stops accepting requests
+- Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
+- Default `log.callerSkipFrames` is now 3 (Blueprint default)
+- TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
+- Podman and Kubernetes containers are detected like Docker (`--no-sandbox`, shared browser)
+- Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
+
 ### Fixed
-- A render whose browser context could not be disposed no longer leaves its egress proxy open forever, and its open connections are cut immediately.
-- `enableHttpDebugging` now works (it was a no-op): configs that already set it to `true` will start emitting per-request Info lines.
+- A render whose browser context could not be disposed no longer leaves its egress proxy open forever: the proxy cuts its open connections immediately and is closed once the context is disposed
+- The job deadline is now honoured while waiting in js_event mode and during the settling wait
+- The uploaded report file is now closed when the request ends
 
 ### Security
 - Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
@@ -18,26 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the server refuses to start when `authTokenSecret` / `ZIPREPORT_API_KEY` is empty, shorter than 32 characters, padded with whitespace, or a placeholder value published in earlier sample configs and docs. The Docker image no longer ships a usable token
 - `NewApiServer` returns an error instead of disabling authentication when given an empty secret
 - Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
-- Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs
-- The bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it)
-
-### Changed
-- `timeout_job` now includes time spent waiting for a free render slot; a disconnected client cancels its job; the API write deadline is re-armed after the upload.
-- The API `writeTimeout` now defaults to 720s (and the shipped sample changes from 600 to 720) so a maximal render plus upload and queue time completes; previously the default was 60s when omitted, which cut renders over 60s. `readTimeout` defaults to 600s, `0` means default, and new 15s header and 60s idle timeouts apply. Explicit timeouts keep their values
-- The default `baseHttpPort` is now 22000 (was 42000). The old default lies inside the Linux ephemeral port range (32768-60999), so outbound sockets, including the per-job egress proxy's, could take a report port and fail the job. Configs that set `baseHttpPort` explicitly (including 42000) keep their value and log a startup warning when the render ports overlap the ephemeral range. Ephemeral report servers now also bind synchronously and skip a held port in favour of the next slot
-- New `zipReport.egressAllow` (CIDRs or exact `host:port`) to permit intranet asset hosts through the egress proxy
-- **Breaking:** rendered content no longer uses the container's `HTTP_PROXY`/`HTTPS_PROXY`; the per-job proxy dials directly, so deployments that depend on an outbound proxy lose external assets (chaining is a deferred follow-up)
-- Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
-- Graceful stop now drains in-flight renders for up to 8 seconds (SIGINT/SIGTERM); the render engine is shut down after the API server stops accepting requests
-- Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
-- Default `log.callerSkipFrames` is now 3 (Blueprint default)
-- TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
-- The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
-- Cross-site iframes now run out of process. Their `console.log` output, including `zpt-view-ready`, is no longer seen by the engine, so a report that signals readiness from a cross-site iframe will hit the JS timeout; signal from the top-level page instead
-- The `bin=` option of the `rod` environment variable is ignored; the browser is always the pinned build, resolved once at startup
-- Expect higher memory use per job (site isolation runs more renderer processes)
-- Podman and Kubernetes containers are detected like Docker (`--no-sandbox`, shared browser)
-- Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
+- Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs. The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
+- Zip entries are now streamed and size-checked while they are read, and requests whose `Host` header does not match the report server are rejected with 421
 
 ## [2.4.1]
 
