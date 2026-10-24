@@ -116,6 +116,7 @@ func (z *ZipReport) Build(appName string) {
 		go func() {
 			if err := prom.Start(); err != nil {
 				z.logger.Error(err, "prometheus metrics server failed")
+				z.AbortFatal(err)
 			}
 		}()
 
@@ -146,6 +147,7 @@ func (z *ZipReport) Start() {
 				err := z.api.Start()
 				if err != nil {
 					z.logger.Error(err, "zipReport API server failed")
+					z.AbortFatal(err)
 				}
 			}()
 			return nil
