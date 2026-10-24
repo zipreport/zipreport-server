@@ -12,6 +12,7 @@ require (
 	github.com/oddbit-project/blueprint/provider/httpserver v0.11.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
+	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/net v0.60.0
 )
@@ -58,7 +59,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/redis/go-redis/v9 v9.20.0 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/ysmood/fetchup v0.5.3 // indirect

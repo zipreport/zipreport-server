@@ -35,7 +35,6 @@ type Engine struct {
 	BrowserPool    rod.Pool[rod.Browser]
 	metrics        *monitor.Metrics
 	logger         *log.Logger
-	httpDebug      bool
 	consoleLogging bool
 	launcherURL    string          // Shared launcher URL for no-sandbox mode
 	launcherMx     sync.Mutex      // Guards launcherURL during relaunch
@@ -112,7 +111,7 @@ func (e *Engine) EnableConsoleLog() {
 }
 
 func (e *Engine) EnableHttpDebugging() {
-	e.httpDebug = true
+	e.ServerPool.HttpDebug = true
 }
 
 // SetServerTimeouts sets the read/write timeouts of the per-job report servers.

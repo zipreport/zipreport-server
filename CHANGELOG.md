@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `enableHttpDebugging` now works (it was a no-op): configs that already set it to `true` will start emitting per-request Info lines.
+
 ### Security
 - Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
 - Bumped Go toolchain from 1.26.4 to 1.27.3, resolving 16 reachable standard-library advisories (net/http, crypto/tls, crypto/x509, net/url, net/textproto, encoding/asn1); golang.org/x/net is now v0.60.0

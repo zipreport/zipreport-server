@@ -15,6 +15,7 @@ import (
 
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -190,4 +191,10 @@ func (c *Config) ApplyEnvOverrides() {
 func (c *Config) DumpDefaults() (string, error) {
 	result, err := json.MarshalIndent(c, "", "  ")
 	return string(result), err
+}
+
+// HttpDebugSuppressedAt reports whether the log level filters out Info lines.
+func HttpDebugSuppressedAt(level string) bool {
+	lvl, err := zerolog.ParseLevel(level)
+	return err == nil && lvl > zerolog.InfoLevel
 }

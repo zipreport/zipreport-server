@@ -87,6 +87,9 @@ func (z *ZipReport) Build(appName string) {
 	}
 	if cfg.ZipReport.EnableHttpDebugging {
 		zptEngine.EnableHttpDebugging()
+		if HttpDebugSuppressedAt(cfg.Logging.Level) {
+			z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
+		}
 	}
 	policy := egress.Policy{ReservedPorts: []int{cfg.ApiServer.Port}}
 	if cfg.ZipReport.EnableMetrics {

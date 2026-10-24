@@ -88,7 +88,7 @@ Configuration for the ZipReport rendering engine.
 | `readTimeoutSeconds`   | integer | `300`   | Read timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.   |
 | `writeTimeoutSeconds`  | integer | `300`   | Write timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.  |
 | `enableConsoleLogging` | boolean | `false` | Enable logging of browser console output during rendering.                                 |
-| `enableHttpDebugging`  | boolean | `false` | Enable HTTP request/response debugging for the rendering engine.                           |
+| `enableHttpDebugging`  | boolean | `false` | Log one line per request reaching the per-job ephemeral servers (method, path, status, bytes, duration; no query strings or bodies) at Info level, capped at 1000 lines per job with a final count of suppressed lines. Requests rejected by Go's HTTP server before the handler (malformed or oversized headers) are not logged. Opt-in: report JavaScript controls how many requests a job makes. |
 | `enableMetrics`        | boolean | `false` | Enable metrics collection for rendering operations.                                        |
 | `concurrency`          | integer | `8`     | Number of concurrent browser instances for parallel rendering.                             |
 | `baseHttpPort`         | integer | `22000` | Base port number for browser instances. Each instance uses baseHttpPort + instance number. Keep baseHttpPort through baseHttpPort+concurrency-1 below the lower bound of `/proc/sys/net/ipv4/ip_local_port_range` (32768 on Linux), or reserve the range with `net.ipv4.ip_local_reserved_ports`; outbound sockets can otherwise take a report port. A warning is logged at startup if they overlap. |

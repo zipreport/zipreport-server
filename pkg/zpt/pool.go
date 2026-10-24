@@ -19,6 +19,7 @@ type ServerPool struct {
 
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	HttpDebug    bool
 
 	metrics *monitor.Metrics
 	logger  *log.Logger
@@ -57,6 +58,7 @@ func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
 		server := NewZptServer(reader, p.BasePort+idx, p.logger)
 		server.Server.ReadTimeout = p.ReadTimeout
 		server.Server.WriteTimeout = p.WriteTimeout
+		server.HttpDebug = p.HttpDebug
 		if err := server.Listen(); err != nil {
 			p.logger.Error(err, "ephemeral report port is held by another process; check baseHttpPort and net.ipv4.ip_local_reserved_ports", log.KV{"address": server.Server.Addr})
 			continue
