@@ -55,6 +55,7 @@ type Engine struct {
 	egressPolicy   egress.Policy
 	egressLookup   egress.LookupFunc
 	contextProxy   func(proxyAddr string) string
+	conns          sync.Map // *rod.Browser -> context.CancelFunc; the cancel closes that browser's CDP connection
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -200,8 +201,15 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	// nothing to dispose until the job's browser context exists
 	disposed := true
 	var jobBrowser *rod.Browser
+	// Track whether browser is healthy; only return to pool if so
+	browserOK := false
 	defer func() {
-		if !disposed {
+		if !disposed && !browserOK {
+			// The browser was discarded: its connection is already dropped (or its process closed), because
+			// the browser defer below runs before this one, so the context cannot outlive it.
+			_ = proxy.Close()
+			e.logger.Warn("browser discarded; egress proxy closed", log.KV{"id": jobId})
+		} else if !disposed {
 			// The context may still exist and points at this port; keep the proxy listening in deny-all
 			// mode rather than freeing the port for another job's proxy, and close it once the context is gone.
 			proxy.Retire(func(ctx context.Context) error { return jobBrowser.Context(ctx).Close() })
@@ -227,9 +235,17 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 			Error:       err,
 		}
 	}
-	// Track whether browser is healthy; only return to pool if so
-	browserOK := false
 	defer func() {
+		if browserOK {
+			// A dead CDP connection must not go back to the pool, and the proxy defer (which runs after
+			// this one) relies on browserOK being accurate: probe the connection, it may have died mid-job.
+			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(e.ctx), 2*time.Second)
+			_, perr := proto.BrowserGetVersion{}.Call(browser.Context(probeCtx))
+			probeCancel()
+			if perr != nil {
+				browserOK = false
+			}
+		}
 		if browserOK {
 			e.BrowserPool.Put(browser)
 			return
@@ -243,6 +259,8 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		if e.launcherURL == "" {
 			_ = browser.Close()
 		}
+		// closing the CDP connection detaches it, so Chrome disposes the DisposeOnDetach contexts
+		e.dropConn(browser)
 		// Return an empty slot so a fresh browser is created on the next Get.
 		e.BrowserPool.Put(nil)
 	}()
@@ -503,12 +521,14 @@ func (e *Engine) GetBrowser() (*rod.Browser, error) {
 func (e *Engine) connectBrowser() (*rod.Browser, error) {
 	if e.launcherURL == "" {
 		// Dedicated launch of the pinned browser, sandboxed
-		u, err := NewLauncher(e.browserBin).Context(e.ctx).Launch()
+		l := NewLauncher(e.browserBin).Context(e.ctx)
+		u, err := l.Launch()
 		if err != nil {
 			return nil, err
 		}
 		b, err := e.connectChecked(u)
 		if err != nil {
+			l.Kill()
 			return nil, err
 		}
 		e.metrics.Browsers.Inc()
@@ -563,7 +583,15 @@ func (e *Engine) connectChecked(url string) (*rod.Browser, error) {
 		cancel()
 		return nil, errProcessProxy
 	}
+	e.conns.Store(b, cancel)
 	return b, nil
+}
+
+// dropConn closes the browser's CDP connection; safe to call more than once.
+func (e *Engine) dropConn(b *rod.Browser) {
+	if c, ok := e.conns.LoadAndDelete(b); ok {
+		c.(context.CancelFunc)()
+	}
 }
 
 // ProcessProxyArg returns the first browser argument that sets a process-wide proxy.
