@@ -3,11 +3,9 @@
     "host": "",
     "port": 6543,
     "readTimeout": 600,
-    "writeTimeout": 600,
+    "writeTimeout": 720,
     "debug": false,
-    "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "",
-    "defaultSecurityHeaders": true,
+    "serverName": "http",
     "trustedProxies": [],
     "tlsCert": "",
     "tlsKey": "",
@@ -19,7 +17,10 @@
     "tlsMinVersion": "",
     "tlsMaxVersion": "",
     "tlsAllowedDNSNames": null,
-    "tlsEnable": false
+    "tlsEnable": false,
+    "authTokenHeader": "X-Auth-Key",
+    "authTokenSecret": "",
+    "defaultSecurityHeaders": true
   },
   "prometheus": {
     "host": "localhost",

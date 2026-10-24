@@ -3,7 +3,7 @@
     "host": "",
     "port": 6543,
     "readTimeout": 600,
-    "writeTimeout": 600,
+    "writeTimeout": 720,
     "debug": false,
     "authTokenHeader": "X-Auth-Key",
     "authTokenSecret": "",

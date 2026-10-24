@@ -21,7 +21,13 @@ const (
 	DefaultReadTimeoutSeconds  = 300
 	DefaultWriteTimeoutSeconds = 300
 	DefaultPort                = 6543
-	MinAuthSecretLength        = 32
+	// API read covers headers and the multipart upload (<=128 MiB); slow headers are
+	// bounded separately by ReadHeaderTimeout.
+	DefaultApiReadTimeout = 600
+	// API write is armed after the request headers are read and must cover the upload,
+	// the slot wait, browser startup, the job (up to render.JobMaxTimeout) and the PDF write.
+	DefaultApiWriteTimeout = render.JobMaxTimeout + 120
+	MinAuthSecretLength    = 32
 )
 
 var (
@@ -109,6 +115,8 @@ func NewConfig() *Config {
 func apiServerConfig() *apiserver.ApiServerConfig {
 	sc := httpserver.NewServerConfig()
 	sc.Port = DefaultPort
+	sc.ReadTimeout = DefaultApiReadTimeout
+	sc.WriteTimeout = DefaultApiWriteTimeout
 	return &apiserver.ApiServerConfig{
 		ServerConfig:           *sc,
 		AuthTokenHeader:        "X-Auth-Key",
@@ -120,6 +128,12 @@ func apiServerConfig() *apiserver.ApiServerConfig {
 func (c *Config) Validate() error {
 	if c.ApiServer == nil {
 		return errors.New("apiServer is required")
+	}
+	if c.ApiServer.ReadTimeout <= 0 {
+		c.ApiServer.ReadTimeout = DefaultApiReadTimeout
+	}
+	if c.ApiServer.WriteTimeout <= 0 {
+		c.ApiServer.WriteTimeout = DefaultApiWriteTimeout
 	}
 	if err := c.ApiServer.Validate(); err != nil {
 		return err

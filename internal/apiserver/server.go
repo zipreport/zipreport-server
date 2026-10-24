@@ -3,6 +3,7 @@ package apiserver
 import (
 	"crypto/subtle"
 	"errors"
+	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -10,6 +11,12 @@ import (
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
 	"github.com/oddbit-project/blueprint/provider/httpserver/auth"
+)
+
+// httpserver does not expose these; without them net/http falls back to ReadTimeout.
+const (
+	ReadHeaderTimeout = 15 * time.Second
+	IdleTimeout       = 60 * time.Second
 )
 
 // ApiServerConfig holds the HTTP server settings plus token-auth and
@@ -43,6 +50,8 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	if err != nil {
 		return nil, err
 	}
+	srv.Server.ReadHeaderTimeout = ReadHeaderTimeout
+	srv.Server.IdleTimeout = IdleTimeout
 
 	if cfg.DefaultSecurityHeaders {
 		srv.UseDefaultSecurityHeaders()

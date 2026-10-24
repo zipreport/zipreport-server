@@ -1,11 +1,15 @@
 package test
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"zipreport-server/internal"
 	"zipreport-server/internal/apiserver"
+	"zipreport-server/pkg/render"
 
 	"github.com/oddbit-project/blueprint/config/provider"
 	"github.com/oddbit-project/blueprint/log"
@@ -118,4 +122,51 @@ func TestZipReportConfig_ServerTimeouts(t *testing.T) {
 	r, w := c.ServerTimeouts()
 	assert.Equal(t, 7*time.Second, r)
 	assert.Equal(t, 8*time.Second, w)
+}
+
+func loadConfigJSON(t *testing.T, body string) *internal.Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	cfg := internal.NewConfig()
+	p, err := provider.NewJsonProvider(path)
+	require.NoError(t, err)
+	require.NoError(t, p.Get(cfg))
+	return cfg
+}
+
+func TestConfig_CompleteReferenceMatchesDefaults(t *testing.T) {
+	dump, err := internal.NewConfig().DumpDefaults()
+	require.NoError(t, err)
+	raw, err := os.ReadFile("../config/config.complete.json")
+	require.NoError(t, err)
+	var want, got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(dump), &want))
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.Equal(t, want, got)
+}
+
+func TestConfig_APITimeoutDefaults(t *testing.T) {
+	cfg := loadConfigJSON(t, `{"apiServer":{"port":6543}}`)
+	assert.Equal(t, render.JobMaxTimeout+120, cfg.ApiServer.WriteTimeout)
+	assert.GreaterOrEqual(t, cfg.ApiServer.WriteTimeout-render.JobMaxTimeout, 120)
+	assert.Equal(t, 600, cfg.ApiServer.ReadTimeout)
+}
+
+func TestConfig_APITimeoutZeroNormalised(t *testing.T) {
+	cfg := loadConfigJSON(t, `{"apiServer":{"port":6543,"readTimeout":0,"writeTimeout":0,"authTokenSecret":"`+strongSecret+`"}}`)
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, 600, cfg.ApiServer.ReadTimeout)
+	assert.Equal(t, render.JobMaxTimeout+120, cfg.ApiServer.WriteTimeout)
+}
+
+func TestNewApiServer_ConnectionTimeouts(t *testing.T) {
+	cfg := internal.NewConfig().ApiServer
+	cfg.AuthTokenSecret = strongSecret
+	cfg.Host = "localhost"
+	cfg.Port = 0
+	srv, err := apiserver.NewApiServer(cfg, nil, sharedMetrics, log.New("test"))
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Second, srv.Server.ReadHeaderTimeout)
+	assert.Equal(t, 60*time.Second, srv.Server.IdleTimeout)
 }
