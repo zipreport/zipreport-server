@@ -122,3 +122,30 @@ func TestEngine_LaunchesWithoutIsolationDisabledFlags(t *testing.T) {
 		assert.NotContains(t, a, "disable-site-isolation-trials")
 	}
 }
+
+func TestProcessProxyArg(t *testing.T) {
+	yes := []string{"--proxy-server=http://x:1", "--proxy-pac-url=http://x/p.pac", "--no-proxy-server"}
+	for _, a := range yes {
+		got, ok := render.ProcessProxyArg([]string{"--foo", a})
+		assert.True(t, ok, a)
+		assert.Equal(t, a, got)
+	}
+	for _, a := range []string{"--proxy-bypass-list=x", "--user-data-dir=/tmp/proxy-server"} {
+		_, ok := render.ProcessProxyArg([]string{a})
+		assert.False(t, ok, a)
+	}
+}
+
+func TestBrowser_ProxyFlagReported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser test in short mode")
+	}
+	u := render.NewLauncher(browser.BinPath()).Set("proxy-server", "http://127.0.0.1:9").MustLaunch()
+	b := rod.New().ControlURL(u).MustConnect()
+	defer b.MustClose()
+
+	cl, err := proto.BrowserGetBrowserCommandLine{}.Call(b)
+	require.NoError(t, err)
+	_, ok := render.ProcessProxyArg(cl.Arguments)
+	assert.True(t, ok, "Chrome did not report --proxy-server in a form the check matches")
+}

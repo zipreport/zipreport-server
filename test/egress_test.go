@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -719,4 +720,30 @@ Promise.all(waits).then(function () { console.log('zpt-view-ready'); });
 		assert.Contains(t, joined, p, "no blocked sample for %s", p)
 	}
 	assert.Contains(t, result.BlockedSamples, fmt.Sprintf("internal.test:%d", portW))
+}
+
+func TestRender_FailsClosedWhenContextBypassesProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser-based egress test in short mode")
+	}
+	var seen atomic.Int32
+	rp := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
+		seen.Add(1) // absolute-form request: Out keeps the target URL and Host
+	}}
+	plain := httptest.NewServer(rp)
+	defer plain.Close()
+
+	_, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+	engine.SetContextProxy(func(string) string { return plain.URL })
+
+	result := egressRenderJob(t, engine, map[string][]byte{
+		"index.html": []byte(`<html><body><div>P</div><script>console.log('zpt-view-ready')</script></body></html>`),
+	})
+	require.NotNil(t, result)
+	assert.False(t, result.Success)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "did not pass through the egress proxy")
+	assert.Greater(t, seen.Load(), int32(0), "control: the page must have loaded through the bypass proxy")
 }

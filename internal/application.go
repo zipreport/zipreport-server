@@ -82,26 +82,10 @@ func (z *ZipReport) Build(appName string) {
 			cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+cfg.ZipReport.Concurrency-1))
 	}
 	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
-	if cfg.ZipReport.EnableConsoleLogging {
-		zptEngine.EnableConsoleLog()
+	z.AbortFatal(ConfigureEngine(zptEngine, cfg))
+	if cfg.ZipReport.EnableHttpDebugging && HttpDebugSuppressedAt(cfg.Logging.Level) {
+		z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
 	}
-	if cfg.ZipReport.EnableHttpDebugging {
-		zptEngine.EnableHttpDebugging()
-		if HttpDebugSuppressedAt(cfg.Logging.Level) {
-			z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
-		}
-	}
-	policy := egress.Policy{ReservedPorts: []int{cfg.ApiServer.Port}}
-	if cfg.ZipReport.EnableMetrics {
-		policy.ReservedPorts = append(policy.ReservedPorts, cfg.Prometheus.Port)
-	}
-	for _, s := range cfg.ZipReport.EgressAllow {
-		rule, err := egress.ParseRule(s) // validated in cfg.Validate()
-		z.AbortFatal(err)
-		policy.Allow = append(policy.Allow, rule)
-	}
-	zptEngine.SetEgressPolicy(policy)
-	zptEngine.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
 	// register engine destructor to release browsers and ephemeral servers on shutdown
 	blueprint.RegisterDestructor(func() error {
 		zptEngine.Shutdown()
@@ -157,4 +141,28 @@ func (z *ZipReport) Start() {
 			return nil
 		},
 	)
+}
+
+// ConfigureEngine applies the zipReport settings to the render engine.
+func ConfigureEngine(e *render.Engine, cfg *Config) error {
+	if cfg.ZipReport.EnableConsoleLogging {
+		e.EnableConsoleLog()
+	}
+	if cfg.ZipReport.EnableHttpDebugging {
+		e.EnableHttpDebugging()
+	}
+	policy := egress.Policy{ReservedPorts: []int{cfg.ApiServer.Port}}
+	if cfg.ZipReport.EnableMetrics {
+		policy.ReservedPorts = append(policy.ReservedPorts, cfg.Prometheus.Port)
+	}
+	for _, s := range cfg.ZipReport.EgressAllow {
+		rule, err := egress.ParseRule(s) // validated in cfg.Validate()
+		if err != nil {
+			return err
+		}
+		policy.Allow = append(policy.Allow, rule)
+	}
+	e.SetEgressPolicy(policy)
+	e.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
+	return nil
 }

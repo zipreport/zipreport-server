@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"context"
 	"testing"
 	"time"
 	"zipreport-server/internal"
@@ -169,4 +170,34 @@ func TestNewApiServer_ConnectionTimeouts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 15*time.Second, srv.Server.ReadHeaderTimeout)
 	assert.Equal(t, 60*time.Second, srv.Server.IdleTimeout)
+}
+
+func TestConfigureEngine_AppliesZipReportSettings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser-based test in short mode")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := render.NewEngine(ctx, 1, 31800, sharedMetrics, nil)
+	defer engine.Shutdown()
+
+	cfg := configWithSecret(strongSecret)
+	cfg.ZipReport.ReadTimeoutSeconds = 7
+	cfg.ZipReport.WriteTimeoutSeconds = 8
+	cfg.ZipReport.EnableHttpDebugging = true
+	cfg.ZipReport.EnableMetrics = true
+	cfg.Prometheus.Port = 2299
+	cfg.ApiServer.Port = 6599
+	cfg.ZipReport.EgressAllow = []string{"192.0.2.10:443"}
+
+	require.NoError(t, internal.ConfigureEngine(engine, cfg))
+	assert.Equal(t, 7*time.Second, engine.ServerPool.ReadTimeout)
+	assert.Equal(t, 8*time.Second, engine.ServerPool.WriteTimeout)
+	assert.True(t, engine.ServerPool.HttpDebug)
+	assert.Contains(t, engine.EgressPolicy().ReservedPorts, 6599)
+	assert.Contains(t, engine.EgressPolicy().ReservedPorts, 2299)
+	assert.Len(t, engine.EgressPolicy().Allow, 1)
+
+	cfg.ZipReport.EgressAllow = []string{"not a rule"}
+	assert.Error(t, internal.ConfigureEngine(engine, cfg))
 }

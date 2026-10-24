@@ -54,6 +54,7 @@ type Engine struct {
 	concurrency    int
 	egressPolicy   egress.Policy
 	egressLookup   egress.LookupFunc
+	contextProxy   func(proxyAddr string) string
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -133,6 +134,19 @@ func (e *Engine) SetServerTimeouts(read, write time.Duration) {
 }
 
 func (e *Engine) SetEgressPolicy(p egress.Policy) { e.egressPolicy = p }
+
+// EgressPolicy returns the configured egress policy.
+func (e *Engine) EgressPolicy() egress.Policy { return e.egressPolicy }
+
+// SetContextProxy overrides the proxy server given to each job's browser context. Test-only: production never calls it.
+func (e *Engine) SetContextProxy(fn func(proxyAddr string) string) { e.contextProxy = fn }
+
+func (e *Engine) proxyServerFor(proxyAddr string) string {
+	if e.contextProxy != nil {
+		return e.contextProxy(proxyAddr)
+	}
+	return "http://" + proxyAddr
+}
 
 // SetEgressLookup replaces DNS resolution in job proxies. Test-only: production never calls it.
 func (e *Engine) SetEgressLookup(fn egress.LookupFunc) { e.egressLookup = fn }
@@ -241,7 +255,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	// included, goes through the job's egress proxy.
 	ctxRes, err := proto.TargetCreateBrowserContext{
 		DisposeOnDetach: true,
-		ProxyServer:     "http://" + proxyAddr,
+		ProxyServer:     e.proxyServerFor(proxyAddr),
 		ProxyBypassList: "<-loopback>",
 	}.Call(browser)
 	if err != nil {
@@ -545,13 +559,21 @@ func (e *Engine) connectChecked(url string) (*rod.Browser, error) {
 		cancel()
 		return nil, fmt.Errorf("reading browser command line: %w", err)
 	}
-	for _, a := range cl.Arguments {
-		if strings.HasPrefix(a, "--proxy-server") || strings.HasPrefix(a, "--proxy-pac-url") || strings.HasPrefix(a, "--no-proxy-server") {
-			cancel()
-			return nil, errProcessProxy
-		}
+	if _, bad := ProcessProxyArg(cl.Arguments); bad {
+		cancel()
+		return nil, errProcessProxy
 	}
 	return b, nil
+}
+
+// ProcessProxyArg returns the first browser argument that sets a process-wide proxy.
+func ProcessProxyArg(args []string) (string, bool) {
+	for _, a := range args {
+		if strings.HasPrefix(a, "--proxy-server") || strings.HasPrefix(a, "--proxy-pac-url") || strings.HasPrefix(a, "--no-proxy-server") {
+			return a, true
+		}
+	}
+	return "", false
 }
 
 // relaunchSharedBrowser relaunches the shared no-sandbox Chrome, unless another

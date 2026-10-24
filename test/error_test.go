@@ -179,6 +179,13 @@ func TestRender_ClosesUploadedFile(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 
+	assertNoMultipartFd(t)
+}
+
+// assertNoMultipartFd fails if any open fd points at a mime/multipart temp file
+// (formdata.go os.CreateTemp(tempDir, "multipart-"))
+func assertNoMultipartFd(t *testing.T) {
+	t.Helper()
 	entries, err := os.ReadDir("/proc/self/fd")
 	require.NoError(t, err)
 	for _, e := range entries {
@@ -188,4 +195,49 @@ func TestRender_ClosesUploadedFile(t *testing.T) {
 		}
 		assert.NotContains(t, target, "multipart-", "multipart temp file left open")
 	}
+}
+
+func TestRender_ClosesUploadedFileAfterRender(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("needs /proc")
+	}
+	// disable GC so a finalizer cannot close a leaked fd
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
+	zipPath := filepath.Join(t.TempDir(), "big.zpt")
+	f, err := os.Create(zipPath)
+	require.NoError(t, err)
+	zw := zip.NewWriter(f)
+	w0, err := zw.Create("report.html")
+	require.NoError(t, err)
+	_, err = w0.Write([]byte("<html><body><p>ok</p></body></html>"))
+	require.NoError(t, err)
+	w1, err := zw.CreateHeader(&zip.FileHeader{Name: "padding.bin", Method: zip.Store})
+	require.NoError(t, err)
+	_, err = w1.Write(make([]byte, 40<<20))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	require.NoError(t, f.Close())
+
+	st, err := os.Stat(zipPath)
+	require.NoError(t, err)
+	require.Greater(t, st.Size(), int64(32<<20)) // spills to a multipart temp file
+
+	srv, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	req := createMultipartRequest(t, zipPath, map[string]string{
+		"page_size": "A4",
+		"margins":   "standard",
+	})
+	req.Header.Set("X-Auth-Key", testAuthToken)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assertNoMultipartFd(t)
 }
