@@ -69,7 +69,7 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	v := srv.Group("v2")
 	{
 		v.POST("/render", func(g *gin.Context) {
-			renderAction(g, engine, metrics)
+			renderAction(g, engine, metrics, time.Duration(cfg.WriteTimeout)*time.Second)
 		})
 	}
 

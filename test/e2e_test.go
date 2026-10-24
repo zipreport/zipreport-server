@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -474,4 +476,85 @@ func TestE2E_SettlingRespectsJobTimeout(t *testing.T) {
 	assert.True(t, errors.Is(result.Error, render.ErrJobTimeout), "error: %v", result.Error)
 	assert.Greater(t, elapsed, 1*time.Second)
 	assert.Less(t, elapsed, 12*time.Second)
+}
+
+// TestRenderJob_DeadlineCoversSlotWait tests that time queued for a render slot counts against timeout_job
+func TestRenderJob_DeadlineCoversSlotWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Chrome")
+	}
+
+	_, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	jobA := newInlineJob(t, `<html><body>never signals</body></html>`)
+	jobA.UseJSEvent = true
+	jobA.JobTimeoutS = 8
+	aDone := make(chan *render.JobResult, 1)
+	go func() { aDone <- engine.RenderJob(jobA) }()
+	time.Sleep(500 * time.Millisecond)
+
+	jobB := newInlineJob(t, `<html><body>ready</body></html>`)
+	jobB.JobTimeoutS = 2
+	start := time.Now()
+	resB := engine.RenderJob(jobB)
+	elapsed := time.Since(start)
+	t.Logf("B elapsed=%s", elapsed)
+
+	assert.False(t, resB.Success)
+	assert.True(t, errors.Is(resB.Error, render.ErrJobTimeout), "error: %v", resB.Error)
+	assert.Less(t, elapsed, 4*time.Second)
+
+	<-aDone
+}
+
+// TestRenderJob_CancelledRequestFreesSlot tests that a cancelled request context cancels its job
+func TestRenderJob_CancelledRequestFreesSlot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Chrome")
+	}
+
+	_, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	time.AfterFunc(1*time.Second, reqCancel)
+
+	jobA := newInlineJob(t, `<html><body>never signals</body></html>`)
+	jobA.UseJSEvent = true
+	jobA.JobTimeoutS = 30
+	jobA.Ctx = reqCtx
+	start := time.Now()
+	aDone := make(chan *render.JobResult, 1)
+	go func() { aDone <- engine.RenderJob(jobA) }()
+
+	var resA *render.JobResult
+	select {
+	case resA = <-aDone:
+	case <-time.After(40 * time.Second):
+		t.Fatal("job A still running long after its request was cancelled")
+	}
+	aElapsed := time.Since(start)
+	t.Logf("A elapsed=%s", aElapsed)
+	assert.False(t, resA.Success)
+	assert.True(t, errors.Is(resA.Error, render.ErrJobCancelled), "error: %v", resA.Error)
+	assert.Less(t, aElapsed, 3*time.Second)
+
+	jobB := newInlineJob(t, `<html><body>ready</body></html>`)
+	jobB.JobTimeoutS = 10
+	resB := engine.RenderJob(jobB)
+	bElapsed := time.Since(start)
+	t.Logf("B done at %s", bElapsed)
+	assert.True(t, resB.Success, "error: %v", resB.Error)
+	assert.Less(t, bElapsed, 6*time.Second)
+
+	b, err := engine.GetBrowser()
+	require.NoError(t, err)
+	defer engine.BrowserPool.Put(b)
+	res, err := proto.TargetGetBrowserContexts{}.Call(b)
+	require.NoError(t, err)
+	assert.Empty(t, res.BrowserContextIDs, "cancelled job's browser context must be disposed")
 }

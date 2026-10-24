@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"net/http"
+	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -15,7 +16,7 @@ import (
 // usage from oversized or malicious uploads.
 const MaxUploadBytes = 128 << 20 // 128 MiB
 
-func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
+func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics, writeTimeout time.Duration) {
 	// cap request body size
 	g.Request.Body = http.MaxBytesReader(g.Writer, g.Request.Body, MaxUploadBytes)
 
@@ -35,6 +36,13 @@ func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
 		return
 	}
 	defer func() { _ = closer.Close() }()
+
+	// the server's WriteTimeout started at header read and also covered the upload;
+	// from here the response must only wait for the job
+	rc := http.NewResponseController(g.Writer)
+	if err := rc.SetWriteDeadline(time.Now().Add(job.Timeout() + writeTimeout)); err != nil {
+		logger.Warn("cannot extend write deadline", log.KV{"reqId": reqId, "error": err.Error()})
+	}
 
 	result := e.RenderJob(job)
 	if !result.Success {

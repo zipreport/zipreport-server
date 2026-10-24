@@ -25,8 +25,8 @@ const (
 	// API read covers headers and the multipart upload (<=128 MiB); slow headers are
 	// bounded separately by ReadHeaderTimeout.
 	DefaultApiReadTimeout = 600
-	// API write is armed after the request headers are read and must cover the upload,
-	// the slot wait, browser startup, the job (up to render.JobMaxTimeout) and the PDF write.
+	// API write is armed after the request headers are read and so covers the upload (it must be
+	// >= the read timeout); renderAction re-arms it after the upload to job timeout + write timeout.
 	DefaultApiWriteTimeout = render.JobMaxTimeout + 120
 	MinAuthSecretLength    = 32
 )

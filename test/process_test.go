@@ -46,6 +46,11 @@ func buildServerBinary(t *testing.T) string {
 
 func startServer(t *testing.T, level string) (cmd *exec.Cmd, baseURL string, key string, out *bytes.Buffer) {
 	t.Helper()
+	return startServerWith(t, level, 600, 31000)
+}
+
+func startServerWith(t *testing.T, level string, apiWriteTimeout, baseHttpPort int) (cmd *exec.Cmd, baseURL string, key string, out *bytes.Buffer) {
+	t.Helper()
 	bin := buildServerBinary(t)
 
 	l, err := net.Listen("tcp", "localhost:0")
@@ -59,7 +64,7 @@ func startServer(t *testing.T, level string) (cmd *exec.Cmd, baseURL string, key
 			"host":                   "localhost",
 			"port":                   port,
 			"readTimeout":            600,
-			"writeTimeout":           600,
+			"writeTimeout":           apiWriteTimeout,
 			"authTokenHeader":        "X-Auth-Key",
 			"authTokenSecret":        key,
 			"defaultSecurityHeaders": true,
@@ -68,7 +73,7 @@ func startServer(t *testing.T, level string) (cmd *exec.Cmd, baseURL string, key
 			"readTimeoutSeconds":  300,
 			"writeTimeoutSeconds": 300,
 			"concurrency":         1,
-			"baseHttpPort":        31000,
+			"baseHttpPort":        baseHttpPort,
 			"enableMetrics":       false,
 		},
 		"log": map[string]any{
@@ -217,4 +222,27 @@ func TestProcess_LogLevelFromConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProcess_WriteDeadlineMeasuredFromUpload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
+	_, baseURL, key, out := startServerWith(t, "debug", 2, 31700)
+
+	resp, err := postRender(baseURL, key, "fixtures/test.zpt", map[string]string{
+		"script":        "test.html",
+		"page_size":     "A4",
+		"margins":       "standard",
+		"js_event":      "false",
+		"settling_time": "4000",
+		"timeout_job":   "20",
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, strings.HasPrefix(string(body), "%PDF-"))
+	assert.NotContains(t, out.String(), "cannot extend write deadline")
 }

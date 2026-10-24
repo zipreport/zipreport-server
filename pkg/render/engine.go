@@ -27,6 +27,17 @@ import (
 // ErrJobTimeout is returned when the job deadline expires while waiting for the page.
 var ErrJobTimeout = errors.New("render job timed out")
 
+// jobCtxErr maps a finished job context to ErrJobTimeout or ErrJobCancelled.
+func jobCtxErr(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrJobTimeout, ctx.Err())
+	}
+	return fmt.Errorf("%w: %w", ErrJobCancelled, ctx.Err())
+}
+
+// ErrJobCancelled is returned when the job's caller went away before the job finished.
+var ErrJobCancelled = errors.New("render job cancelled")
+
 const DefaultConcurrency = 8
 const DefaultBasePort = 22000
 
@@ -131,18 +142,27 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	e.logger.Debug("starting job...", log.KV{"id": jobId, "job": job})
 
 	// Validate timeouts to prevent immediately-canceled contexts
-	jobTimeout := job.JobTimeoutS
-	if jobTimeout <= 0 {
-		jobTimeout = JobDefaultTimeout
-	}
 	jsTimeout := job.JsTimeoutS
 	if jsTimeout <= 0 {
 		jsTimeout = JobDefaultJsTimeout
 	}
 
-	server := e.ServerPool.BuildServer(job.Zpt)
+	// the deadline starts here, so waiting for a render slot counts against it
+	parent := job.Ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	jobCtx, jobCancel := context.WithTimeout(e.ctx, job.Timeout())
+	defer jobCancel()
+	stop := context.AfterFunc(parent, jobCancel) // client gone: job cancelled
+	defer stop()
+
+	server := e.ServerPool.BuildServerContext(jobCtx, job.Zpt)
 	if server == nil {
 		err := errors.New("failed to build server")
+		if jobCtx.Err() != nil {
+			err = fmt.Errorf("waiting for a render slot: %w", jobCtxErr(jobCtx))
+		}
 		e.logger.Error(err, "failed to build server")
 		return &JobResult{
 			ElapsedTime: 0,
@@ -248,10 +268,15 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}()
 
 	url := "http://" + server.Server.Addr + "/" + job.IndexFile
-	pageCtx, pageCancel := context.WithTimeout(e.ctx, time.Duration(jobTimeout)*time.Second)
+	pageCtx, pageCancel := context.WithCancel(jobCtx)
 	page, err := jobBrowser.Context(pageCtx).Page(proto.TargetCreateTarget{})
 	if err != nil {
 		pageCancel()
+		if jobCtx.Err() != nil {
+			// the browser is healthy; the job ran out of time or was cancelled
+			browserOK = true
+			err = fmt.Errorf("creating page: %w", jobCtxErr(jobCtx))
+		}
 		e.logger.Error(err, "failed to create page", log.KV{"id": jobId})
 		return &JobResult{
 			ElapsedTime: time.Since(start).Seconds(),
@@ -348,7 +373,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		case <-done:
 			break
 		case <-pageCtx.Done():
-			err = fmt.Errorf("%w: %w", ErrJobTimeout, pageCtx.Err())
+			err = jobCtxErr(pageCtx)
 			e.logger.Error(err, "job timed out waiting for console message", log.KV{"id": jobId})
 			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
 		case <-timeout:
@@ -400,7 +425,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		select {
 		case <-time.After(time.Duration(job.JobSettlingTimeMs) * time.Millisecond):
 		case <-pageCtx.Done():
-			err = fmt.Errorf("%w: %w", ErrJobTimeout, pageCtx.Err())
+			err = jobCtxErr(pageCtx)
 			e.logger.Error(err, "job timed out during settling time", log.KV{"id": jobId})
 			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
 		}

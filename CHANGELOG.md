@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it)
 
 ### Changed
+- `timeout_job` now includes time spent waiting for a free render slot; a disconnected client cancels its job; the API write deadline is re-armed after the upload.
 - The API `writeTimeout` now defaults to 720s (and the shipped sample changes from 600 to 720) so a maximal render plus upload and queue time completes; previously the default was 60s when omitted, which cut renders over 60s. `readTimeout` defaults to 600s, `0` means default, and new 15s header and 60s idle timeouts apply. Explicit timeouts keep their values
 - The default `baseHttpPort` is now 22000 (was 42000). The old default lies inside the Linux ephemeral port range (32768-60999), so outbound sockets, including the per-job egress proxy's, could take a report port and fail the job. Configs that set `baseHttpPort` explicitly (including 42000) keep their value and log a startup warning when the render ports overlap the ephemeral range. Ephemeral report servers now also bind synchronously and skip a held port in favour of the next slot
 - New `zipReport.egressAllow` (CIDRs or exact `host:port`) to permit intranet asset hosts through the egress proxy

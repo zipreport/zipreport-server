@@ -49,7 +49,20 @@ func NewServerPool(limit int, basePort int, m *monitor.Metrics, logger *log.Logg
 }
 
 func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
-	<-p.slots // read slot
+	return p.BuildServerContext(context.Background(), reader)
+}
+
+// BuildServerContext is BuildServer, but gives up waiting for a slot when ctx ends.
+func (p *ServerPool) BuildServerContext(ctx context.Context, reader *ZptReader) *ZptServer {
+	select {
+	case <-p.slots: // read slot
+	case <-ctx.Done():
+		return nil
+	}
+	if ctx.Err() != nil { // select picks at random when both are ready
+		p.slots <- nil
+		return nil
+	}
 	p.mx.Lock()
 	for idx, val := range p.pool {
 		if val != nil {

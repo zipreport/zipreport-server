@@ -110,6 +110,7 @@ func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, io.Closer, er
 		return fail(err)
 	}
 	job := render.NewRenderJob(reader, reqId)
+	job.Ctx = c.Request.Context()
 
 	// validate page size
 	job.PageSize = c.Request.PostFormValue(ParamPageSize)

@@ -31,7 +31,7 @@ Configuration for the HTTP API server that handles rendering requests.
 | `host`                           | string  | `""`                      | Hostname or IP address to bind the server to. Empty string binds to all interfaces.            |
 | `port`                           | integer | `6543`                    | Port number for the API server to listen on.                                                   |
 | `readTimeout`                    | integer | `600`                     | Maximum duration in seconds for reading the entire request, including the body.                |
-| `writeTimeout`                   | integer | `720`                     | Maximum duration in seconds for writing the response; must exceed the longest render (`timeout_job` max 600s) plus upload and queue time. |
+| `writeTimeout`                   | integer | `720`                     | Write deadline in seconds. It covers the upload (so keep it at least `readTimeout`); once the upload is parsed the handler re-arms it to `timeout_job` + `writeTimeout`. |
 | `debug`                          | boolean | `false`                   | Enable debug mode for additional logging and diagnostic information.                           |
 | `serverName`                     | string  | `"http"`                  | Name of the HTTP request logger (module field in request log lines).                           |
 | `authTokenHeader`                | string  | `"X-Auth-Key"`            | HTTP header that carries the authentication token.                                             |
@@ -50,7 +50,7 @@ Configuration for the HTTP API server that handles rendering requests.
 | `tlsMaxVersion`                  | string  | `""`                      | Maximum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.                      |
 | `tlsAllowedDNSNames`             | array   | `null`                    | List of allowed DNS names for client certificate validation.                                   |
 
-`0` or negative `readTimeout`/`writeTimeout` values mean "use the default". Header read is limited to 15s and idle keep-alive to 60s. Time spent waiting for a free render slot counts against `writeTimeout` and is not otherwise bounded.
+`0` or negative `readTimeout`/`writeTimeout` values mean "use the default". Header read is limited to 15s and idle keep-alive to 60s. Time spent waiting for a free render slot counts against `timeout_job`, and a client that disconnects cancels its job.
 
 ### prometheus
 
