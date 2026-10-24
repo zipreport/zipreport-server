@@ -3,6 +3,7 @@ package zpt
 import (
 	"context"
 	"sync"
+	"time"
 	"zipreport-server/pkg/monitor"
 
 	"github.com/oddbit-project/blueprint"
@@ -15,8 +16,12 @@ type ServerPool struct {
 	ctx      context.Context
 	pool     []*ZptServer
 	BasePort int
-	metrics  *monitor.Metrics
-	logger   *log.Logger
+
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+
+	metrics *monitor.Metrics
+	logger  *log.Logger
 }
 
 func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, m *monitor.Metrics, logger *log.Logger) *ServerPool {
@@ -29,8 +34,12 @@ func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, m *m
 		ctx:      ctx,
 		pool:     make([]*ZptServer, limit),
 		BasePort: basePort,
-		metrics:  m,
-		logger:   logger,
+
+		ReadTimeout:  ReadTimeout,
+		WriteTimeout: WriteTimeout,
+
+		metrics: m,
+		logger:  logger,
 	}
 }
 
@@ -46,6 +55,8 @@ func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
 			continue
 		}
 		server := NewZptServer(reader, p.BasePort+idx, p.logger)
+		server.Server.ReadTimeout = p.ReadTimeout
+		server.Server.WriteTimeout = p.WriteTimeout
 		if err := server.Listen(); err != nil {
 			p.logger.Error(err, "ephemeral report port is held by another process; check baseHttpPort and net.ipv4.ip_local_reserved_ports", log.KV{"address": server.Server.Addr})
 			continue

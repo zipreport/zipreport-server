@@ -98,6 +98,7 @@ func (z *ZipReport) Build(appName string) {
 		policy.Allow = append(policy.Allow, rule)
 	}
 	zptEngine.SetEgressPolicy(policy)
+	zptEngine.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
 	// register engine destructor to release browsers and ephemeral servers on shutdown
 	blueprint.RegisterDestructor(func() error {
 		zptEngine.Shutdown()

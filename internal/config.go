@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/metrics"
@@ -69,6 +70,10 @@ func NewZipReportConfig() *ZipReportConfig {
 		BaseHttpPort:         render.DefaultBasePort,
 		EgressAllow:          []string{},
 	}
+}
+
+func (c *ZipReportConfig) ServerTimeouts() (read, write time.Duration) {
+	return time.Duration(c.ReadTimeoutSeconds) * time.Second, time.Duration(c.WriteTimeoutSeconds) * time.Second
 }
 
 func (c *ZipReportConfig) Validate() error {

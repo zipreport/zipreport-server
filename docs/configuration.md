@@ -76,8 +76,8 @@ Configuration for the ZipReport rendering engine.
 
 | Field                  | Type    | Default | Description                                                                                |
 |------------------------|---------|---------|--------------------------------------------------------------------------------------------|
-| `readTimeoutSeconds`   | integer | `300`   | Maximum duration in seconds for reading requests to the rendering engine.                  |
-| `writeTimeoutSeconds`  | integer | `300`   | Maximum duration in seconds for writing responses from the rendering engine.               |
+| `readTimeoutSeconds`   | integer | `300`   | Read timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.   |
+| `writeTimeoutSeconds`  | integer | `300`   | Write timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.  |
 | `enableConsoleLogging` | boolean | `false` | Enable logging of browser console output during rendering.                                 |
 | `enableHttpDebugging`  | boolean | `false` | Enable HTTP request/response debugging for the rendering engine.                           |
 | `enableMetrics`        | boolean | `false` | Enable metrics collection for rendering operations.                                        |

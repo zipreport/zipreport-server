@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 	"time"
+	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/zpt"
 
 	"github.com/oddbit-project/blueprint/log"
@@ -125,4 +126,37 @@ func TestServerPool_GaugeBalancedAfterShutdown(t *testing.T) {
 	pool.Shutdown()
 	time.Sleep(300 * time.Millisecond)
 	assert.Equal(t, before, testutil.ToFloat64(sharedMetrics.HttpServers))
+}
+
+func TestServerPool_UsesConfiguredTimeouts(t *testing.T) {
+	reader, logger := poolTestSetup(t)
+
+	pool := zpt.NewServerPool(1, 30800, sharedMetrics, logger)
+	pool.ReadTimeout = 7 * time.Second
+	pool.WriteTimeout = 8 * time.Second
+	srv := pool.BuildServer(reader)
+	require.NotNil(t, srv)
+	assert.Equal(t, 7*time.Second, srv.Server.ReadTimeout)
+	assert.Equal(t, 8*time.Second, srv.Server.WriteTimeout)
+	pool.RemoveServer(srv)
+
+	pool2 := zpt.NewServerPool(1, 30810, sharedMetrics, logger)
+	srv2 := pool2.BuildServer(reader)
+	require.NotNil(t, srv2)
+	assert.Equal(t, zpt.ReadTimeout, srv2.Server.ReadTimeout)
+	assert.Equal(t, zpt.WriteTimeout, srv2.Server.WriteTimeout)
+	pool2.RemoveServer(srv2)
+}
+
+func TestEngine_SetServerTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("launches Chrome in CI/Docker")
+	}
+	_, logger := poolTestSetup(t)
+	engine := render.NewEngine(context.Background(), 1, 30900, sharedMetrics, logger)
+	defer engine.Shutdown()
+
+	engine.SetServerTimeouts(7*time.Second, 8*time.Second)
+	assert.Equal(t, 7*time.Second, engine.ServerPool.ReadTimeout)
+	assert.Equal(t, 8*time.Second, engine.ServerPool.WriteTimeout)
 }

@@ -3,6 +3,7 @@ package test
 import (
 	"strings"
 	"testing"
+	"time"
 	"zipreport-server/internal"
 	"zipreport-server/internal/apiserver"
 
@@ -108,4 +109,13 @@ func TestNewApiServer_RejectsEmptySecret(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authTokenSecret")
 	assert.Nil(t, srv)
+}
+
+func TestZipReportConfig_ServerTimeouts(t *testing.T) {
+	c := internal.NewZipReportConfig()
+	c.ReadTimeoutSeconds = 7
+	c.WriteTimeoutSeconds = 8
+	r, w := c.ServerTimeouts()
+	assert.Equal(t, 7*time.Second, r)
+	assert.Equal(t, 8*time.Second, w)
 }

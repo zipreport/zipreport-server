@@ -115,6 +115,13 @@ func (e *Engine) EnableHttpDebugging() {
 	e.httpDebug = true
 }
 
+// SetServerTimeouts sets the read/write timeouts of the per-job report servers.
+// 0 means no timeout (net/http semantics).
+func (e *Engine) SetServerTimeouts(read, write time.Duration) {
+	e.ServerPool.ReadTimeout = read
+	e.ServerPool.WriteTimeout = write
+}
+
 func (e *Engine) SetEgressPolicy(p egress.Policy) { e.egressPolicy = p }
 
 // SetEgressLookup replaces DNS resolution in job proxies. Test-only: production never calls it.

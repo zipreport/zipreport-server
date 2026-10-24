@@ -12,12 +12,6 @@ import (
 	"github.com/oddbit-project/blueprint/provider/httpserver/auth"
 )
 
-const (
-	DefaultReadTimeout  = 300
-	DefaultWriteTimeout = 300
-	DefaultPort         = 6543
-)
-
 // ApiServerConfig holds the HTTP server settings plus token-auth and
 // security-header options. The httpserver provider no longer carries these in
 // an Options map, so they are configured here and applied in NewApiServer.
