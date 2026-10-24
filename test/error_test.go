@@ -1,11 +1,14 @@
 package test
 
 import (
+	"archive/zip"
 	"bytes"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 	"time"
 
@@ -146,4 +149,47 @@ func TestError_NoFileField(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code,
 		"Missing report field should return 400 Bad Request")
 	_ = ctx
+}
+
+// TestRender_ClosesUploadedFile tests that the uploaded report file handle is
+// closed when the request is rejected after the file was opened
+func TestRender_ClosesUploadedFile(t *testing.T) {
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("needs /proc")
+	}
+	// disable GC so a finalizer cannot close a leaked fd
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
+	zipPath := filepath.Join(t.TempDir(), "big.zpt")
+	f, err := os.Create(zipPath)
+	require.NoError(t, err)
+	zw := zip.NewWriter(f)
+	w0, err := zw.CreateHeader(&zip.FileHeader{Name: "report.html", Method: zip.Store})
+	require.NoError(t, err)
+	_, err = w0.Write(make([]byte, 40<<20))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	require.NoError(t, f.Close())
+
+	srv, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	countFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		require.NoError(t, err)
+		return len(entries)
+	}
+	before := countFDs()
+
+	req := createMultipartRequest(t, zipPath, map[string]string{
+		"page_size": "Bogus",
+		"margins":   "standard",
+	})
+	req.Header.Set("X-Auth-Key", testAuthToken)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	assert.Equal(t, before, countFDs())
 }

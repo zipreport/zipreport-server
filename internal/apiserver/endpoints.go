@@ -28,12 +28,13 @@ func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
 	logger := log.FromContext(g)
 
 	m.TotalOps.Inc() // update metrics
-	job, err := buildRenderJob(g, reqId)
+	job, closer, err := buildRenderJob(g, reqId)
 	if err != nil {
 		logger.Error(err, "error building render job", log.KV{"reqId": reqId})
 		errBadRequest(g, "error building render job")
 		return
 	}
+	defer func() { _ = closer.Close() }()
 
 	result := e.RenderJob(job)
 	if !result.Success {

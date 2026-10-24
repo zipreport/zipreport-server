@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"errors"
+	"io"
 	"strconv"
 	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/zpt"
@@ -93,45 +94,49 @@ func strFloatValue(ctx *gin.Context, name string, defaultValue float64) (float64
  * To simplify implementation of optional fields and validation of specific values,
  * Bind() is not used
  */
-func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, error) {
+func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, io.Closer, error) {
 	// validate zpt stream
 	report, rptinfo, err := c.Request.FormFile(ParamReport)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	fail := func(err error) (*render.Job, io.Closer, error) {
+		_ = report.Close()
+		return nil, nil, err
 	}
 	// build render job
 	reader, err := zpt.NewZptReader(report, rptinfo.Size)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	job := render.NewRenderJob(reader, reqId)
 
 	// validate page size
 	job.PageSize = c.Request.PostFormValue(ParamPageSize)
 	if !strExists(job.PageSize, render.ValidPageSizes) {
-		return nil, errInvalidPageSize
+		return fail(errInvalidPageSize)
 	}
 	// validate margin style
 	job.MarginStyle = c.Request.PostFormValue(ParamMarginStyle)
 	if !strExists(job.MarginStyle, render.ValidMarginStyle) {
-		return nil, errInvalidMarginStyle
+		return fail(errInvalidMarginStyle)
 	}
 	job.MarginLeft, err = strFloatValue(c, ParamMarginLeft, 0)
 	if err != nil || job.MarginLeft < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 
 	job.MarginRight, err = strFloatValue(c, ParamMarginRight, 0)
 	if err != nil || job.MarginRight < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 	job.MarginTop, err = strFloatValue(c, ParamMarginTop, 0)
 	if err != nil || job.MarginTop < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 	job.MarginBottom, err = strFloatValue(c, ParamMarginBottom, 0)
 	if err != nil || job.MarginBottom < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 
 	// validate main script
@@ -147,5 +152,5 @@ func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, error) {
 	job.UseJSEvent = optionalBoolValue(c, ParamJsEvent, false)
 	job.IgnoreSSLErrors = optionalBoolValue(c, IgnoreSslErr, false)
 
-	return job, nil
+	return job, report, nil
 }
