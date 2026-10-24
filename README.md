@@ -161,6 +161,8 @@ Triggering example:
 
 #### [GET] /metrics
 
+In Docker, set `prometheus.host` to `0.0.0.0` in your mounted config; see [docs/configuration.md](./docs/configuration.md) for exposure caveats.
+
 Prometheus metrics endpoint. Besides the default internal Go metrics, the following are provided:
 
 | metric                | type      | description                                                          |
@@ -309,6 +311,7 @@ services:
     image: ghcr.io/zipreport/zipreport-server:2.4.0
     ports:
       - "6543:6543"
+      # Metrics: the mounted config.json must enable metrics and set prometheus.host to "0.0.0.0"
       - "2220:2220"  # Prometheus metrics (if enabled)
     volumes:
       - ./config:/app/config

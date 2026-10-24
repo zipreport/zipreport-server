@@ -55,7 +55,7 @@ Configuration for the Prometheus metrics endpoint.
 
 | Field                  | Type    | Default       | Description                                                                         |
 |------------------------|---------|---------------|-------------------------------------------------------------------------------------|
-| `host`                 | string  | `"localhost"` | Hostname or IP address to bind the metrics server to.                               |
+| `host`                 | string  | `"localhost"` | Address to bind the metrics server to. Keep `localhost` on bare metal. In containers set `0.0.0.0` (see below). |
 | `port`                 | integer | `2220`        | Port number for the Prometheus metrics endpoint.                                    |
 | `endpoint`             | string  | `"/metrics"`  | HTTP path for the metrics endpoint.                                                 |
 | `tlsEnable`            | boolean | `false`       | Enable TLS/HTTPS for the metrics endpoint.                                          |
@@ -66,6 +66,12 @@ Configuration for the Prometheus metrics endpoint.
 | `tlsKeyPasswordFile`   | string  | `""`          | Path to file containing the TLS key password.                                       |
 | `tlsAllowedCACerts`    | array   | `null`        | List of paths to CA certificate files for client certificate validation.            |
 | `tlsCipherSuites`      | array   | `null`        | List of allowed TLS cipher suites. If null, uses Go's default secure cipher suites. |
+
+**Metrics in containers**
+
+- Inside a container, `localhost` is the container's own loopback and is unreachable from outside, so a mounted config that enables metrics must set `"host": "0.0.0.0"`.
+- The endpoint is unauthenticated and includes Go runtime and process metrics (`go_*`, `process_*`) in addition to the zipreport metrics.
+- With `0.0.0.0` the port is reachable from other containers on the same Docker bridge or user-defined network and from other pods in Kubernetes (via the pod IP), even without `-p`. Under `--network host` it is exposed on every host interface. Restrict access with network policy or firewalling, or enable `tlsEnable` and scrape over a private network.
 | `tlsMinVersion`        | string  | `""`          | Minimum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
 | `tlsMaxVersion`        | string  | `""`          | Maximum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
 | `tlsAllowedDNSNames`   | array   | `null`        | List of allowed DNS names for client certificate validation.                        |
