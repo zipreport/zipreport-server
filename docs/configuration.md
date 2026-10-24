@@ -17,7 +17,8 @@ The following environment variables can be used to override configuration file v
 
 Example:
 ```shell
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:latest
+export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"   # keep it: clients send it as the X-Auth-Key header
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY zipreport-server:latest
 ```
 
 ## Configuration Sections
@@ -69,15 +70,15 @@ Configuration for the Prometheus metrics endpoint.
 | `tlsKeyPasswordFile`   | string  | `""`          | Path to file containing the TLS key password.                                       |
 | `tlsAllowedCACerts`    | array   | `null`        | List of paths to CA certificate files for client certificate validation.            |
 | `tlsCipherSuites`      | array   | `null`        | List of allowed TLS cipher suites. If null, uses Go's default secure cipher suites. |
+| `tlsMinVersion`        | string  | `""`          | Minimum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
+| `tlsMaxVersion`        | string  | `""`          | Maximum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
+| `tlsAllowedDNSNames`   | array   | `null`        | List of allowed DNS names for client certificate validation.                        |
 
 **Metrics in containers**
 
 - Inside a container, `localhost` is the container's own loopback and is unreachable from outside, so a mounted config that enables metrics must set `"host": "0.0.0.0"`.
 - The endpoint is unauthenticated and includes Go runtime and process metrics (`go_*`, `process_*`) in addition to the zipreport metrics.
 - With `0.0.0.0` the port is reachable from other containers on the same Docker bridge or user-defined network and from other pods in Kubernetes (via the pod IP), even without `-p`. Under `--network host` it is exposed on every host interface. Restrict access with network policy or firewalling, or enable `tlsEnable` and scrape over a private network.
-| `tlsMinVersion`        | string  | `""`          | Minimum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
-| `tlsMaxVersion`        | string  | `""`          | Maximum TLS version (e.g., "1.2", "1.3"). Empty string uses Go's default.           |
-| `tlsAllowedDNSNames`   | array   | `null`        | List of allowed DNS names for client certificate validation.                        |
 
 ### zipReport
 
@@ -158,6 +159,8 @@ Configuration for application logging.
 
 ### High-Concurrency Configuration
 
+The secret is not part of this example: supply `apiServer.authTokenSecret` (at least 32 characters, e.g. `openssl rand -hex 32`) in the file or through `ZIPREPORT_API_KEY`.
+
 ```json
 {
   "apiServer": {
@@ -175,6 +178,8 @@ Configuration for application logging.
 ```
 
 ### Development Configuration with Debug Logging
+
+The secret is not part of this example: supply `apiServer.authTokenSecret` (at least 32 characters, e.g. `openssl rand -hex 32`) in the file or through `ZIPREPORT_API_KEY`.
 
 ```json
 {
@@ -198,8 +203,8 @@ Configuration for application logging.
 
 ## Security Considerations
 
-1. **Authentication Secret**: Always change `apiServer.authTokenSecret` from the default value in production
-   environments. Use a strong, randomly generated secret.
+1. **Authentication Secret**: Supply a unique `apiServer.authTokenSecret` (or `ZIPREPORT_API_KEY`); there is no default
+   and the server refuses to start without one. Use a strong, randomly generated secret.
 
 2. **TLS Certificates**: When enabling TLS, ensure certificates are properly secured with appropriate file permissions (
    e.g., 0600 for private keys).

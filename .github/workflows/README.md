@@ -11,8 +11,9 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
 **Jobs:**
 
 1. **test** - Runs tests and code quality checks
-   - Sets up Go 1.26.3
+   - Sets up Go 1.27.3
    - Downloads and verifies dependencies
+   - Installs the pinned Chrome for Testing build with `go run ./cmd/browser-update` (before the tests)
    - Runs `go fmt` to check code formatting
    - Runs `go vet` for static analysis
    - Runs `golangci-lint` (v2) for comprehensive linting
@@ -29,7 +30,9 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
    - Uses GitHub Actions cache for faster builds
 
 3. **e2e-docker** - End-to-end Docker test (requires build-docker to pass)
-   - Builds and runs Docker container
+   - Builds the Docker container
+   - Generates a random API key for the run (`openssl rand -hex 32`, masked in the logs) and passes it to the container as `ZIPREPORT_API_KEY`
+   - Runs the container
    - Waits for container to be ready
    - Sends a test render request
    - Validates PDF response
@@ -101,7 +104,8 @@ make test-integration
 docker build -t zipreport-server:local .
 
 # Run container with API key
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:local
+export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY zipreport-server:local
 
 # Or with custom config
 docker run -p 6543:6543 -v $(pwd)/config:/app/config zipreport-server:local
@@ -211,7 +215,7 @@ Actions are pinned to Node.js 24-compatible versions:
 If tests fail:
 1. Check the test output in the Actions tab
 2. Run tests locally: `make test-integration`
-3. Ensure Go 1.26.3 is installed locally
+3. Ensure Go 1.27.3 is installed locally
 
 ### Docker Build Failures
 

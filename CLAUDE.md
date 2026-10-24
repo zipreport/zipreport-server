@@ -46,6 +46,8 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 3. `render.Engine.RenderJob()` orchestrates:
     - Acquires a browser from `rod.Pool` (headless Chromium instances)
     - Acquires a `zpt.ServerPool` slot → starts ephemeral HTTP server serving ZIP contents on `localhost:PORT`
+    - Creates an isolated browser context for the job whose only proxy is a per-job egress proxy (`pkg/egress`); the
+      context is disposed afterwards (a context that cannot be disposed keeps its proxy in deny-all until it is)
     - Navigates browser to `http://localhost:PORT/<script>` (default: `report.html`)
     - Either waits for `console.log("zpt-view-ready")` (JS event mode) or waits for page load + settling time
     - Calls `page.PDF()` and returns bytes
@@ -58,6 +60,8 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 - **`pkg/render/`** — `Engine` (browser pool + server pool + job execution), `Job`/`JobResult` structs, PDF options
 - **`pkg/zpt/`** — `ZptReader` (ZIP reader wrapper), `ZptServer` (ephemeral HTTP server with path traversal protection),
   `ServerPool` (concurrent slot management)
+- **`pkg/egress/`** — Per-job egress proxy and policy: blocks loopback/private/link-local destinations unless allowed by
+  `zipReport.egressAllow`; dials directly (no upstream proxy chaining)
 - **`pkg/monitor/`** — Prometheus metrics definitions (counters, gauges, histogram)
 - **`pkg/metrics/`** — Prometheus HTTP server configuration
 - **`pkg/browser/`** — Chrome for Testing downloader (pinned version, all platforms; replaces rod's built-in downloader)
@@ -97,11 +101,12 @@ counter to prevent conflicts.
 ### Docker Environment
 
 The production Dockerfile uses a two-stage build: Go builder → Wolfi (`cgr.dev/chainguard/wolfi-base`) runtime with
-Chrome dependencies. Wolfi is glibc-based, so the glibc Chromium that `browser-update` downloads runs unmodified.
+Chrome dependencies. Wolfi is glibc-based, so the glibc Chrome that `browser-update` downloads runs unmodified.
 Chrome runtime libs are pulled via `apk` (notably `libudev`, without which Chrome aborts at startup, and `libnss` for
 Mozilla NSS — Wolfi's `nss` package is glibc Name Service Switch, not NSS). Chrome sandbox is disabled inside
-containers (detected via `/.dockerenv` file). The `browser-update` tool downloads the correct Chromium version at
-build time.
+containers (`needsNoSandbox` in `pkg/render/engine.go`: `/.dockerenv`, `/.containerenv`, `KUBERNETES_SERVICE_HOST`, or
+`CI`/`GITHUB_ACTIONS`=`true`). The `browser-update` tool downloads the pinned Chrome for Testing
+build at build time.
 
 **Multi-platform support**: Docker images are built for `linux/amd64` and `linux/arm64`. The builder stage uses
 `--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chrome

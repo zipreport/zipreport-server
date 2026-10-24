@@ -13,17 +13,30 @@ ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML
 previous
 versions.
 
-### Upgrading to the next release
+### Upgrading to 3.0.0
 
-**Breaking change — API secret requirements.** The server now refuses to start when `authTokenSecret` (or `ZIPREPORT_API_KEY`)
-is empty, shorter than 32 characters, padded with whitespace, or one of the placeholder values that appeared in earlier
-sample configs and docs. The Docker image no longer contains a usable secret. Generate one with `openssl rand -hex 32` and
-pass it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as it reaches
-the default branch.
+Version 3.0.0 has breaking changes. The full list, with what to change, is in the
+[migration guide](./docs/migration-guide.md); the short version:
 
-**Breaking change — HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY`. All of a
-job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend on
-an outbound proxy lose external assets (CDN fonts, scripts, images). Chaining to an upstream proxy is a deferred follow-up.
+1. **API secret requirements.** The server refuses to start when `authTokenSecret` (or `ZIPREPORT_API_KEY`) is empty,
+   shorter than 32 characters, padded with whitespace, or one of the placeholder values that appeared in earlier sample
+   configs and docs. The Docker image no longer contains a usable secret. Generate one with `openssl rand -hex 32` and pass
+   it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as it reaches the
+   default branch.
+2. **HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored). All of a
+   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend
+   on an outbound proxy lose external assets (CDN fonts, scripts, images). Loopback, private and link-local destinations are
+   blocked unless allowed with `zipReport.egressAllow`. A Chrome started with `--proxy-server`, `--proxy-pac-url` or
+   `--no-proxy-server` is refused.
+3. **Listener failures exit.** If the API or metrics listener cannot start (for example the port is in use), the process
+   now exits instead of logging and carrying on.
+4. **`baseHttpPort` default is 22000** (was 42000, inside the Linux ephemeral port range). A configured range that
+   overlaps the ephemeral range logs a startup warning.
+5. **API timeouts.** `apiServer.writeTimeout` defaults to 720s, header read is limited to 15s and idle keep-alive to 60s;
+   a `readTimeout`/`writeTimeout` of 0 or less means the default. `timeout_job` now includes the wait for a free render
+   slot, and a client that disconnects cancels its job.
+6. **Chrome for Testing 156 with site isolation.** Expect higher memory per job; a `zpt-view-ready` `console.log` from a
+   cross-site iframe is no longer seen, so signal readiness from the top-level page.
 
 ### Upgrading to version 2.4.0
 
@@ -183,13 +196,15 @@ zipreport-server performs header-based authentication using the token specified 
 The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, which takes precedence over the config file. This is useful for Docker deployments:
 
 ```shell
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:2.4.0
+# generate the key once and keep it: clients send it as the X-Auth-Key header
+export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY zipreport-server:3.0.0
 ```
 
 Example:
 ```bash
 curl -X POST http://localhost:6543/v2/render \
-  -H "X-Auth-Key: your-secret-token" \
+  -H "X-Auth-Key: $ZIPREPORT_API_KEY" \
   -F "report=@report.zpt" \
   -F "page_size=A4" \
   -F "margins=standard" \
@@ -218,10 +233,11 @@ Both variants are functionally identical.
 
 ```shell
 # Build locally
-docker build . --tag zipreport-server:2.4.0
+docker build . --tag zipreport-server:3.0.0
 
-# Run with API key (uses default config, HTTP only, no TLS)
-docker run -p 6543:6543 -e ZIPREPORT_API_KEY="$(openssl rand -hex 32)" zipreport-server:2.4.0
+# Run with API key from the exported variable (uses default config, HTTP only, no TLS)
+export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"
+docker run -p 6543:6543 -e ZIPREPORT_API_KEY zipreport-server:3.0.0
 ```
 
 **Production Deployment with Custom Configuration**
@@ -253,7 +269,7 @@ Then run with your configuration:
 # Mount your configuration directory
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.4.0
+  zipreport-server:3.0.0
 ```
 
 **With TLS/HTTPS**
@@ -283,7 +299,7 @@ Run with TLS:
 ```shell
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  zipreport-server:2.4.0
+  zipreport-server:3.0.0
 ```
 
 **Using Prebuilt Image**
@@ -293,12 +309,12 @@ docker run -p 6543:6543 \
 docker pull ghcr.io/zipreport/zipreport-server:latest
 
 # Or specific version
-docker pull ghcr.io/zipreport/zipreport-server:2.4.0
+docker pull ghcr.io/zipreport/zipreport-server:3.0.0
 
 # Run with mounted configuration
 docker run -p 6543:6543 \
   -v $(pwd)/config:/app/config \
-  ghcr.io/zipreport/zipreport-server:2.4.0
+  ghcr.io/zipreport/zipreport-server:3.0.0
 ```
 
 **Docker Compose Example**
@@ -308,7 +324,7 @@ version: '3.8'
 
 services:
   zipreport:
-    image: ghcr.io/zipreport/zipreport-server:2.4.0
+    image: ghcr.io/zipreport/zipreport-server:3.0.0
     ports:
       - "6543:6543"
       # Metrics: the mounted config.json must enable metrics and set prometheus.host to "0.0.0.0"
