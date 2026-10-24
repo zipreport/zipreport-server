@@ -162,14 +162,13 @@ func TestRender_ClosesUploadedFile(t *testing.T) {
 	require.NoError(t, zw.Close())
 	require.NoError(t, f.Close())
 
-	srv := setupAPIServer(t)
+	// control: the upload must exceed gin's default 32 MiB MaxMultipartMemory so
+	// mime/multipart spills it to a "multipart-*" temp file (formdata.go os.CreateTemp)
+	st, err := os.Stat(zipPath)
+	require.NoError(t, err)
+	require.Greater(t, st.Size(), int64(32<<20))
 
-	countFDs := func() int {
-		entries, err := os.ReadDir("/proc/self/fd")
-		require.NoError(t, err)
-		return len(entries)
-	}
-	before := countFDs()
+	srv := setupAPIServer(t)
 
 	req := createMultipartRequest(t, zipPath, map[string]string{
 		"page_size": "Bogus",
@@ -180,5 +179,13 @@ func TestRender_ClosesUploadedFile(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 
-	assert.Equal(t, before, countFDs())
+	entries, err := os.ReadDir("/proc/self/fd")
+	require.NoError(t, err)
+	for _, e := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", e.Name()))
+		if err != nil {
+			continue // fd closed since the listing (e.g. the ReadDir handle itself)
+		}
+		assert.NotContains(t, target, "multipart-", "multipart temp file left open")
+	}
 }
