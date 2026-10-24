@@ -35,8 +35,10 @@ All browser traffic of a render job goes through a built-in per-job egress proxy
   switch from any custom launch arguments.
 - Loopback, local-interface, private, link-local and cloud-metadata destinations (including host names that resolve to
   them) are blocked. Permit intranet asset hosts with `zipReport.egressAllow`, a list of CIDRs or exact `host:port`
-  entries, for example `["10.20.0.0/16", "assets.intranet:443"]`. No entry can open another job's server, the proxy, the
-  API or the metrics port.
+  entries, for example `["10.20.0.0/16", "assets.intranet:443"]`. Always refused, on loopback and local addresses: the
+  render-port range, the job's own proxy port, the API port and, if enabled, the metrics port. Allowing loopback ranges
+  (e.g. `127.0.0.0/8`) also exposes other local services, including other jobs' egress proxies and Chrome's DevTools
+  port; avoid it.
 
 ## 3. Listener failures now exit the process
 
@@ -64,10 +66,11 @@ ephemeral range; lower `baseHttpPort` or reserve the ports with
 - `writeTimeout` covers the upload, so keep it at least `readTimeout`. After the upload is parsed the handler re-arms the
   write deadline to `timeout_job` + `writeTimeout`.
 - `timeout_job` now includes the time a job waits for a free render slot.
-- A client that disconnects cancels its job; the job fails with `render job cancelled` (`ErrJobCancelled`).
+- A client that disconnects cancels its job; the job stops at its next wait (slot wait, page creation, JS-event or
+  settling wait) and its result reports `ErrJobCancelled`; navigation and PDF steps report the underlying context error.
 - Known limits: a client that half-closes its socket after sending the request cancels its own job, and disconnect
   detection only starts once the request body has been read to EOF.
-- If your config sets `writeTimeout: 600`, change it to 720 or remove the key.
+- If your config sets `writeTimeout: 600`, it still works (it only needs to cover the upload, at least `readTimeout`); the default is 720.
 
 ## 6. Chrome for Testing 156 with site isolation
 

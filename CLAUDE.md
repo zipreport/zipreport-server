@@ -47,7 +47,7 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
     - Acquires a browser from `rod.Pool` (headless Chromium instances)
     - Acquires a `zpt.ServerPool` slot → starts ephemeral HTTP server serving ZIP contents on `localhost:PORT`
     - Creates an isolated browser context for the job whose only proxy is a per-job egress proxy (`pkg/egress`); the
-      context is disposed afterwards (a context that cannot be disposed keeps its proxy in deny-all until it is)
+      context is disposed afterwards (the proxy is closed once the context is disposed or the browser is discarded; if disposal keeps failing on a live browser it stays open in deny-all mode, bounded to that job)
     - Navigates browser to `http://localhost:PORT/<script>` (default: `report.html`)
     - Either waits for `console.log("zpt-view-ready")` (JS event mode) or waits for page load + settling time
     - Calls `page.PDF()` and returns bytes
