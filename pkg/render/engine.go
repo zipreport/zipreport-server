@@ -185,12 +185,13 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}
 	// nothing to dispose until the job's browser context exists
 	disposed := true
+	var jobBrowser *rod.Browser
 	defer func() {
 		if !disposed {
-			// The context may still exist and points at this port; keep it and refuse everything
-			// rather than freeing the port for another job's proxy.
-			proxy.DenyAll()
-			e.logger.Error(nil, "browser context not disposed; egress proxy left open in deny-all mode", log.KV{"id": jobId})
+			// The context may still exist and points at this port; keep the proxy listening in deny-all
+			// mode rather than freeing the port for another job's proxy, and close it once the context is gone.
+			proxy.Retire(func(ctx context.Context) error { return jobBrowser.Context(ctx).Close() })
+			e.logger.Error(nil, "browser context not disposed; egress proxy retired, retrying disposal", log.KV{"id": jobId})
 		} else {
 			_ = proxy.Close()
 		}
@@ -254,11 +255,11 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	}
 	jb := *browser
 	jb.BrowserContextID = ctxRes.BrowserContextID
-	jobBrowser := &jb
+	jobBrowser = &jb
 	disposed = false
 	defer func() {
 		// disposes only this context; never call Close() on the pooled browser here
-		disposeCtx, disposeCancel := context.WithTimeout(e.ctx, 5*time.Second)
+		disposeCtx, disposeCancel := context.WithTimeout(context.WithoutCancel(e.ctx), 5*time.Second)
 		defer disposeCancel()
 		if err := jobBrowser.Context(disposeCtx).Close(); err != nil {
 			e.logger.Warn("failed to dispose browser context", log.KV{"id": jobId, "error": err.Error()})

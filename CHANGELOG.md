@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A render whose browser context could not be disposed no longer leaves its egress proxy open forever, and its open connections are cut immediately.
 - `enableHttpDebugging` now works (it was a no-op): configs that already set it to `true` will start emitting per-request Info lines.
 
 ### Security

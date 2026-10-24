@@ -41,6 +41,8 @@ var hopByHop = []string{
 
 // Proxy is a per-job forward proxy that refuses destinations a rendered page must not reach.
 type Proxy struct {
+	RetireInterval time.Duration      // default 10s; delay before each disposal attempt in Retire
+	RetireAttempts int                // default 6; disposal attempts in Retire
 	Lookup         LookupFunc         // default net.DefaultResolver.LookupNetIP; test seam
 	Dial           DialFunc           // default net.Dialer with a 10s timeout; test seam
 	InterfaceAddrs InterfaceAddrsFunc // default net.InterfaceAddrs; test seam
@@ -54,6 +56,8 @@ type Proxy struct {
 	listener  net.Listener
 	server    *http.Server
 	transport *http.Transport
+	base      context.Context // cancelled to abort in-flight forwards
+	cancel    context.CancelFunc
 	proxyPort int
 	local     map[netip.Addr]struct{}
 
@@ -77,6 +81,9 @@ func New(ownHost, ownDial string, poolFirst, poolCount int, policy Policy) *Prox
 		poolCount: poolCount,
 		policy:    policy,
 		tunnels:   map[net.Conn]struct{}{},
+
+		RetireInterval: 10 * time.Second,
+		RetireAttempts: 6,
 	}
 }
 
@@ -127,6 +134,7 @@ func (p *Proxy) Start() (string, error) {
 		IdleConnTimeout:       30 * time.Second,
 	}
 	p.server = &http.Server{Handler: p, ReadHeaderTimeout: 10 * time.Second}
+	p.base, p.cancel = context.WithCancel(context.Background())
 	go func() { _ = p.server.Serve(p.listener) }()
 	return l.Addr().String(), nil
 }
@@ -135,6 +143,9 @@ func (p *Proxy) Start() (string, error) {
 func (p *Proxy) Close() error {
 	p.mu.Lock()
 	p.closed = true
+	if p.cancel != nil {
+		p.cancel()
+	}
 	var err error
 	if p.server != nil {
 		err = p.server.Close()
@@ -153,6 +164,43 @@ func (p *Proxy) DenyAll() {
 	p.mu.Lock()
 	p.denyAll = true
 	p.mu.Unlock()
+}
+
+// Retire is for a proxy whose browser context may still exist: it refuses every new
+// request, cuts open tunnels and in-flight forwards, and retries dispose in the
+// background, closing the proxy once dispose succeeds. If every attempt fails the
+// proxy stays open in deny-all mode, so the context's traffic can never reach a
+// later job's proxy on a reused port.
+// The returned channel is closed when the retry loop ends (closed proxy or gave up).
+func (p *Proxy) Retire(dispose func(context.Context) error) <-chan struct{} {
+	interval, attempts := p.RetireInterval, p.RetireAttempts
+	p.DenyAll()
+	p.mu.Lock()
+	for c := range p.tunnels {
+		_ = c.Close()
+	}
+	p.tunnels = map[net.Conn]struct{}{}
+	p.mu.Unlock()
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.transport.CloseIdleConnections()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < attempts; i++ {
+			time.Sleep(interval)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := dispose(ctx)
+			cancel()
+			if err == nil {
+				_ = p.Close()
+				return
+			}
+		}
+	}()
+	return done
 }
 
 // Blocked returns the number of refused requests and a bounded set of distinct sample destinations.
@@ -336,7 +384,11 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	outReq := req.Clone(context.WithValue(req.Context(), targetsKey{}, targets))
+	ctx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(p.base, cancel)
+	defer stop()
+	defer cancel()
+	outReq := req.Clone(context.WithValue(ctx, targetsKey{}, targets))
 	outReq.RequestURI = ""
 	outReq.Close = false // the client's connection semantics do not apply to the upstream hop
 	outReq.URL.Host = targets[0]
@@ -362,7 +414,10 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		// abort the connection so the client sees a truncated body, not a complete one
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
@@ -401,7 +456,7 @@ func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
 	}
 
 	p.mu.Lock()
-	if p.closed {
+	if p.closed || p.denyAll {
 		p.mu.Unlock()
 		_ = client.Close()
 		_ = up.Close()

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -459,6 +460,135 @@ func TestEgressProxy_DenyAll(t *testing.T) {
 	c, err := net.Dial("tcp", env.addr)
 	require.NoError(t, err)
 	_ = c.Close()
+}
+
+func echoUpstream(dialed *atomic.Value) egress.DialFunc {
+	return func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed.Store(addr)
+		client, upstream := net.Pipe()
+		go func() {
+			defer func() { _ = upstream.Close() }()
+			_, _ = io.Copy(upstream, upstream)
+		}()
+		return client, nil
+	}
+}
+
+func fastRetire(env *proxyEnv, attempts int) {
+	env.proxy.RetireInterval = 10 * time.Millisecond
+	env.proxy.RetireAttempts = attempts
+}
+
+func waitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retire loop did not finish")
+	}
+}
+
+func TestEgressProxy_RetireClosesTunnels(t *testing.T) {
+	var dialed atomic.Value
+	env := startProxy(t, proxyOpts{
+		lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+		dial:   echoUpstream(&dialed),
+	})
+	fastRetire(env, 1)
+	c, br, code := rawConnect(t, env.addr, "pub.test:443", "")
+	require.Equal(t, 200, code)
+	_, err := c.Write([]byte("ping\n"))
+	require.NoError(t, err)
+	line, err := br.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "ping\n", line, "control: tunnel echoes before Retire")
+
+	done := env.proxy.Retire(func(context.Context) error { return errors.New("busy") })
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = br.ReadByte()
+	require.Error(t, err)
+	var ne net.Error
+	if errors.As(err, &ne) {
+		assert.False(t, ne.Timeout(), "tunnel must be cut by Retire, not time out")
+	}
+	assert.Equal(t, 403, status(t, env.client, env.ownURL("/")))
+	waitDone(t, done)
+}
+
+func TestEgressProxy_RetireAbortsForwards(t *testing.T) {
+	chunk := bytes.Repeat([]byte("x"), 64<<10)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		_, _ = w.Write(chunk)
+		fl.Flush()
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-deadline:
+				return
+			case <-time.After(100 * time.Millisecond):
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				fl.Flush()
+			}
+		}
+	}))
+	t.Cleanup(up.Close)
+	port := up.Listener.Addr().(*net.TCPAddr).Port
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Allow: []egress.Rule{mustRule(t, fmt.Sprintf("127.0.0.1:%d", port))}}})
+	fastRetire(env, 1)
+
+	pu, err := url.Parse("http://" + env.addr)
+	require.NoError(t, err)
+	tr := &http.Transport{Proxy: http.ProxyURL(pu), DisableKeepAlives: true}
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, err = io.ReadFull(resp.Body, make([]byte, len(chunk)))
+	require.NoError(t, err)
+
+	done := env.proxy.Retire(func(context.Context) error { return errors.New("busy") })
+	start := time.Now()
+	_, err = io.Copy(io.Discard, resp.Body)
+	assert.Less(t, time.Since(start), time.Second)
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF, "the body must be truncated, not end cleanly")
+	waitDone(t, done)
+}
+
+func TestEgressProxy_RetireClosesAfterDispose(t *testing.T) {
+	env := startProxy(t, proxyOpts{})
+	fastRetire(env, 6)
+	var calls atomic.Int32
+	done := env.proxy.Retire(func(context.Context) error {
+		if calls.Add(1) < 3 {
+			return errors.New("busy")
+		}
+		return nil
+	})
+	waitDone(t, done)
+	assert.Equal(t, int32(3), calls.Load())
+	c, err := net.DialTimeout("tcp", env.addr, time.Second)
+	if err == nil {
+		_ = c.Close()
+	}
+	assert.Error(t, err, "listener must be closed once the context is disposed")
+}
+
+func TestEgressProxy_RetireGivesUp(t *testing.T) {
+	env := startProxy(t, proxyOpts{})
+	fastRetire(env, 3)
+	var calls atomic.Int32
+	done := env.proxy.Retire(func(context.Context) error {
+		calls.Add(1)
+		return errors.New("busy")
+	})
+	waitDone(t, done)
+	assert.Equal(t, int32(3), calls.Load())
+	assert.Equal(t, 403, status(t, env.client, env.ownURL("/")), "still listening in deny-all mode")
 }
 
 func TestEgressProxy_BlockedSamplesBoundedAndDistinct(t *testing.T) {
