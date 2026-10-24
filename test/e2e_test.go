@@ -217,9 +217,8 @@ func TestE2E_PDFContentValidation(t *testing.T) {
 	body := w.Body.Bytes()
 	require.True(t, isValidPDF(body), "Response should be a valid PDF")
 
-	// Check for text content in the PDF (works for uncompressed streams)
-	assert.True(t, pdfContainsText(body, "Test Report") || len(body) > 1000,
-		"PDF should contain expected text or be substantial in size")
+	assert.True(t, pdfHasText(body, "Test Report"), "rendered PDF should contain the <h1> text")
+	assert.True(t, pdfHasText(body, "This is a test PDF generation."), "rendered PDF should contain the body paragraph")
 
 	time.Sleep(100 * time.Millisecond)
 	_ = ctx
