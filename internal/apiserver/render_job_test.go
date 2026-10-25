@@ -3,6 +3,7 @@ package apiserver
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,6 +21,13 @@ import (
 
 func parseJob(t *testing.T, fields map[string]string) *render.Job {
 	t.Helper()
+	job, err := tryParseJob(t, fields)
+	require.NoError(t, err)
+	return job
+}
+
+func tryParseJob(t *testing.T, fields map[string]string) (*render.Job, error) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
 	body := &bytes.Buffer{}
@@ -31,8 +39,11 @@ func parseJob(t *testing.T, fields map[string]string) *render.Job {
 	require.NoError(t, err)
 	_, err = io.Copy(part, f)
 	require.NoError(t, err)
-	require.NoError(t, mw.WriteField(ParamPageSize, "A4"))
-	require.NoError(t, mw.WriteField(ParamMarginStyle, "standard"))
+	for k, v := range map[string]string{ParamPageSize: "A4", ParamMarginStyle: "standard"} {
+		if _, overridden := fields[k]; !overridden {
+			require.NoError(t, mw.WriteField(k, v))
+		}
+	}
 	for k, v := range fields {
 		require.NoError(t, mw.WriteField(k, v))
 	}
@@ -44,11 +55,10 @@ func parseJob(t *testing.T, fields map[string]string) *render.Job {
 	c.Request = req
 
 	job, closer, err := buildRenderJob(c, uuid.New())
-	require.NoError(t, err)
 	if closer != nil {
 		t.Cleanup(func() { _ = closer.Close() })
 	}
-	return job
+	return job, err
 }
 
 func TestBuildRenderJob_ClampsParameters(t *testing.T) {
@@ -91,4 +101,45 @@ func TestBuildRenderJob_LandscapeParsing(t *testing.T) {
 	t.Run("absent", func(t *testing.T) {
 		assert.False(t, parseJob(t, nil).Landscape)
 	})
+}
+
+func TestBuildRenderJob_RejectsNonFiniteMargins(t *testing.T) {
+	for _, v := range []string{"NaN", "Inf", "-Inf"} {
+		t.Run(v, func(t *testing.T) {
+			_, err := tryParseJob(t, map[string]string{
+				ParamMarginStyle: "custom",
+				ParamMarginLeft:  v,
+			})
+			assert.True(t, errors.Is(err, errInvalidMarginValue), "got %v", err)
+		})
+	}
+}
+
+func TestBuildRenderJob_PaperSizeMargins(t *testing.T) {
+	cases := []struct {
+		name     string
+		fields   map[string]string
+		accepted bool
+	}{
+		{"a4_left_right_10", map[string]string{ParamPageSize: "A4", ParamMarginLeft: "5", ParamMarginRight: "5"}, false},
+		{"a4_landscape_top_bottom_10", map[string]string{ParamPageSize: "A4", ParamLandscape: "true", ParamMarginTop: "5", ParamMarginBottom: "5"}, false},
+		{"a4_half_inch", map[string]string{ParamPageSize: "A4", ParamMarginLeft: "0.5", ParamMarginRight: "0.5", ParamMarginTop: "0.5", ParamMarginBottom: "0.5"}, true},
+		{"legal_top_bottom_9", map[string]string{ParamPageSize: "Legal", ParamMarginTop: "4.5", ParamMarginBottom: "4.5"}, true},
+		{"a4_landscape_left_right_10", map[string]string{ParamPageSize: "A4", ParamLandscape: "true", ParamMarginLeft: "5", ParamMarginRight: "5"}, true},
+		{"a4_boundary_8_3", map[string]string{ParamPageSize: "A4", ParamMarginLeft: "8.3", ParamMarginRight: "0"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]string{ParamMarginStyle: "custom"}
+			for k, v := range tc.fields {
+				fields[k] = v
+			}
+			_, err := tryParseJob(t, fields)
+			if tc.accepted {
+				assert.NoError(t, err)
+			} else {
+				assert.True(t, errors.Is(err, errInvalidMarginValue), "got %v", err)
+			}
+		})
+	}
 }

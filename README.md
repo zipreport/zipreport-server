@@ -130,10 +130,10 @@ is triggered only after all dynamic canvas elements were generated.
 | report            | Yes       | Report file                                                   |
 | page_size         | Yes       | Page size (A5/A4/A3/Letter/Legal/Tabloid)                     |
 | margins           | Yes       | Margin type (none/minimal/standard/custom)                    |
-| margin_left       | No        | Margin in inches, only used if margins=custom (default 0)     |
-| margin_right      | No        | Margin in inches, only used if margins=custom (default 0)     |
-| margin_top        | No        | Margin in inches, only used if margins=custom (default 0)     |
-| margin_bottom     | No        | Margin in inches, only used if margins=custom (default 0)     |
+| margin_left       | No        | Margin in inches, used only if margins=custom (default 0)  |
+| margin_right      | No        | Margin in inches, used only if margins=custom (default 0)  |
+| margin_top        | No        | Margin in inches, used only if margins=custom (default 0)  |
+| margin_bottom     | No        | Margin in inches, used only if margins=custom (default 0)  |
 | landscape         | No        | If true, print in landscape                                   |
 | script            | No        | Main html file (default report.html)                          |
 | settling_time     | No        | Settling time, in ms (default 200ms, see below)               |
@@ -147,9 +147,10 @@ is triggered only after all dynamic canvas elements were generated.
 Out-of-range values are clamped, not rejected: `settling_time` 0-30000 ms, `timeout_job` 1-600 s, `timeout_js`
 1-300 s (so `timeout_job=0` means 1 s, not the default). A value that is not an integer (including one too large
 for a 64-bit integer) falls back to the default. Booleans accept `1, t, T, TRUE, true, True` and
-`0, f, F, FALSE, false, False`; anything else is treated as the default. The `margin_*` values must be numeric and
-non-negative; a non-numeric or negative value is rejected with 400 whatever the margin type. Request bodies over 128 MiB
-are rejected (400).
+`0, f, F, FALSE, false, False`; anything else is treated as the default. The `margin_*` values must be finite
+and non-negative; a non-numeric, non-finite or negative value is rejected with 400 whatever the margin type. With
+`margins=custom`, left+right must not exceed the page width and top+bottom the page height (as oriented), otherwise 400.
+Request bodies over 128 MiB are rejected (400).
 
 **settling_time** (default: 200)
 

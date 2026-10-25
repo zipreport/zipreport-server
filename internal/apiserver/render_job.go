@@ -3,6 +3,7 @@ package apiserver
 import (
 	"errors"
 	"io"
+	"math"
 	"strconv"
 	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/zpt"
@@ -85,7 +86,11 @@ func strFloatValue(ctx *gin.Context, name string, defaultValue float64) (float64
 	if v, exists := ctx.GetPostForm(name); !exists {
 		return defaultValue, nil
 	} else {
-		return strconv.ParseFloat(v, 64)
+		f, err := strconv.ParseFloat(v, 64)
+		if err == nil && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			return 0, errInvalidMarginValue
+		}
+		return f, err
 	}
 }
 
@@ -147,6 +152,18 @@ func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, io.Closer, er
 	}
 
 	job.Landscape = optionalBoolValue(c, ParamLandscape, false)
+
+	// Chrome rejects margins that consume the oriented page; refuse before rendering
+	if job.MarginStyle == render.MarginCustom {
+		o := job.ToPDFOptions()
+		w, h := *o.PaperWidth, *o.PaperHeight
+		if job.Landscape {
+			w, h = h, w
+		}
+		if job.MarginLeft+job.MarginRight > w || job.MarginTop+job.MarginBottom > h {
+			return fail(errInvalidMarginValue)
+		}
+	}
 	job.JobSettlingTimeMs = clampInt(optionalIntValue(c, ParamSettlingTime, render.JobDefaultSettlingTime), 0, render.JobMaxSettlingTime)
 	job.JobTimeoutS = clampInt(optionalIntValue(c, ParamJobTimeout, render.JobDefaultTimeout), 1, render.JobMaxTimeout)
 	job.JsTimeoutS = clampInt(optionalIntValue(c, ParamJsTimeout, render.JobDefaultJsTimeout), 1, render.JobMaxJsTimeout)
