@@ -351,3 +351,6 @@ func findCommonPrefix(files []*zip.File) string {
 
 	return prefix
 }
+
+// ExtractZip extracts a zip archive to destDir, stripping a shared top-level directory.
+func ExtractZip(zipPath, destDir string) error { return extractZip(zipPath, destDir) }
