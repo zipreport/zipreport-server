@@ -131,15 +131,31 @@ jobs:
           cache-to: type=gha,mode=max
 
   e2e-docker:
-    name: Docker E2E
-    runs-on: ubuntu-24.04
+    name: Docker E2E (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Build Docker image
-        run: docker build -t zipreport-server:e2e .
+        run: docker build -t zipreport-server:e2e-${{ matrix.arch }} .
+
+      - name: Verify image architecture
+        run: |
+          arch=$(docker image inspect --format '{{.Architecture}}' zipreport-server:e2e-${{ matrix.arch }})
+          if [ "$arch" != "${{ matrix.arch }}" ]; then
+            echo "Expected ${{ matrix.arch }}, got $arch"
+            exit 1
+          fi
 
       - name: Generate API key
         run: |
@@ -149,10 +165,10 @@ jobs:
 
       - name: Run container
         run: |
-          docker run -d --name zipreport-e2e \
+          docker run -d --name zipreport-e2e-${{ matrix.arch }} \
             -p 6543:6543 \
             -e ZIPREPORT_API_KEY="$E2E_API_KEY" \
-            zipreport-server:e2e
+            zipreport-server:e2e-${{ matrix.arch }}
 
       - name: Wait for container to be ready
         run: |
@@ -163,7 +179,7 @@ jobs:
             fi
             if [ $i -eq 30 ]; then
               echo "Container failed to start within 30s"
-              docker logs zipreport-e2e
+              docker logs zipreport-e2e-${{ matrix.arch }}
               exit 1
             fi
             sleep 1
@@ -180,15 +196,45 @@ jobs:
             -F "margins=standard")
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Expected 200, got $HTTP_CODE"
-            docker logs zipreport-e2e
+            docker logs zipreport-e2e-${{ matrix.arch }}
             exit 1
           fi
           head -c 5 response.pdf | grep -q '%PDF' || (echo "Not a valid PDF"; exit 1)
           echo "E2E Docker test passed"
 
+      - name: E2E wrong key is rejected
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:6543/v2/render \
+            -H "X-Auth-Key: $(openssl rand -hex 32)" \
+            -F "report=@test/fixtures/test.zpt" \
+            -F "script=test.html" \
+            -F "page_size=A4" \
+            -F "margins=standard")
+          if [ "$HTTP_CODE" != "401" ]; then
+            echo "Expected 401, got $HTTP_CODE"
+            docker logs zipreport-e2e-${{ matrix.arch }}
+            exit 1
+          fi
+
+      - name: E2E invalid page_size is rejected
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:6543/v2/render \
+            -H "X-Auth-Key: $E2E_API_KEY" \
+            -F "report=@test/fixtures/test.zpt" \
+            -F "script=test.html" \
+            -F "page_size=INVALID" \
+            -F "margins=standard")
+          if [ "$HTTP_CODE" != "400" ]; then
+            echo "Expected 400, got $HTTP_CODE"
+            docker logs zipreport-e2e-${{ matrix.arch }}
+            exit 1
+          fi
+
       - name: Cleanup
         if: always()
-        run: docker rm -f zipreport-e2e
+        run: docker rm -f zipreport-e2e-${{ matrix.arch }}
 
   ci-success:
     name: CI Success

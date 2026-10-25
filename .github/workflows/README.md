@@ -30,6 +30,7 @@ Runs on every push and pull request to `development`, `main`, and `master` branc
    - Uses GitHub Actions cache for faster builds
 
 3. **e2e-docker** - End-to-end Docker test (requires build-docker to pass)
+   - Runs as a matrix on native amd64 and arm64 (`ubuntu-24.04-arm`, no QEMU) runners and asserts the image architecture
    - Builds the Docker container
    - Generates a random API key for the run (`openssl rand -hex 32`, masked in the logs) and passes it to the container as `ZIPREPORT_API_KEY`
    - Runs the container
