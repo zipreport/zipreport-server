@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docker base images are pinned by digest (bumped by Dependabot); apk packages still float
+- The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch
+- Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
+
 ## [3.0.0]
 
 This release contains breaking changes; see the upgrade notes in `docs/migration-guide.md` ("Upgrading from 2.4.x to 3.0.0"). Entries marked **Breaking:** need action on upgrade.

@@ -106,7 +106,9 @@ Chrome runtime libs are pulled via `apk` (notably `libudev`, without which Chrom
 Mozilla NSS — Wolfi's `nss` package is glibc Name Service Switch, not NSS). Chrome sandbox is disabled inside
 containers (`needsNoSandbox` in `pkg/render/engine.go`: `/.dockerenv`, `/.containerenv`, `KUBERNETES_SERVICE_HOST`, or
 `CI`/`GITHUB_ACTIONS`=`true`). The `browser-update` tool downloads the pinned Chrome for Testing
-build at build time.
+build at build time and verifies it against a SHA-256 pinned in `pkg/browser` (update with `Version`). Base images are
+pinned by digest (Dependabot bumps them); `apk` packages deliberately still float so the daily rebuild picks up
+security fixes.
 
 **Multi-platform support**: Docker images are built for `linux/amd64` and `linux/arm64`. The builder stage uses
 `--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chrome
