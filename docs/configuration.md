@@ -88,7 +88,7 @@ Configuration for the ZipReport rendering engine.
 |------------------------|---------|---------|--------------------------------------------------------------------------------------------|
 | `readTimeoutSeconds`   | integer | `300`   | Read timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.   |
 | `writeTimeoutSeconds`  | integer | `300`   | Write timeout, in seconds, of the ephemeral per-job HTTP server that serves report files.  |
-| `enableConsoleLogging` | boolean | `false` | Enable logging of browser console output during rendering.                                 |
+| `enableConsoleLogging` | boolean | `false` | Log browser console output (`console.*` calls and Chrome's own log entries, such as failed resource loads) at Info level, capped at 200 entries per job with one `console output truncated` warning. String, number and boolean arguments are logged as their value, objects as Chrome's short description (e.g. `Object`, `Array(3)`). |
 | `enableHttpDebugging`  | boolean | `false` | Log one line per request reaching the per-job ephemeral servers (method, path, status, bytes, duration; no query strings or bodies) at Info level, capped at 1000 lines per job with a final count of suppressed lines. Requests rejected by Go's HTTP server before the handler (malformed or oversized headers) are not logged. Opt-in: report JavaScript controls how many requests a job makes. |
 | `enableMetrics`        | boolean | `false` | Enable metrics collection for rendering operations.                                        |
 | `concurrency`          | integer | `8`     | Number of concurrent browser instances for parallel rendering.                             |

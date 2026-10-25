@@ -5,17 +5,6 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-- A page with a `beforeunload` handler and a busy renderer no longer holds its render slot, browser and egress proxy forever; page close is bounded to 5s
-- Console handling no longer waits on the renderer, so a console flood cannot grow memory without bound; with `enableConsoleLogging`, at most 200 console entries are logged per job and object arguments are logged as Chrome's short description instead of their JSON value
-
-### Changed
-- Docker base images are pinned by digest (bumped by Dependabot); apk packages still float
-- The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch
-- Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
-
 ## [3.0.0]
 
 This release contains breaking changes; see the upgrade notes in `docs/migration-guide.md` ("Upgrading from 2.4.x to 3.0.0"). Entries marked **Breaking:** need action on upgrade.
@@ -40,11 +29,18 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
 - Podman and Kubernetes containers are detected like Docker (`--no-sandbox`, shared browser)
 - Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
+- Docker base images are pinned by digest (bumped by Dependabot); apk packages still float
+- The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch
+- Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
+- Pushing a `v*` tag now publishes the versioned Docker images and the image and source SBOMs (previously only the release was created); a release created in the GitHub UI for an existing tag no longer triggers any build
+- Releases created in the GitHub UI no longer get duplicate `zipreport-zipreport-server_*` SBOM assets
 
 ### Fixed
 - A render whose browser context could not be disposed no longer leaves its egress proxy open forever: the proxy cuts its live connections at once and is closed once the context is disposed or the browser is discarded; if disposal keeps failing on a live browser it stays open in deny-all mode (bounded to that job)
 - The job deadline is now honoured while waiting in js_event mode and during the settling wait
 - The uploaded report file is now closed when the request ends
+- A page with a `beforeunload` handler and a busy renderer no longer holds its render slot, browser and egress proxy forever; page close is bounded to 5s
+- Console handling no longer waits on the renderer, so a console flood cannot grow memory without bound; with `enableConsoleLogging`, at most 200 console and browser log entries are logged per job and object arguments are logged as Chrome's short description instead of their JSON value
 
 ### Security
 - Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
@@ -55,6 +51,8 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
 - Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs. The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
 - Zip entries are now streamed and size-checked while they are read, and requests whose `Host` header does not match the report server are rejected with 421
+- The Docker image is scanned with Trivy before it is pushed and nothing is published when the scan fails; the gate is CRITICAL-only for fixed OS vulnerabilities, as configured (it previously failed on any severity)
+- CI and release workflows pin third-party actions by commit SHA and tools by version, default to read-only tokens, do not persist checkout credentials, and expose Dependency-Track secrets only to the upload step
 
 ## [2.4.1]
 
