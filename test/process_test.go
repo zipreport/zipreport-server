@@ -51,6 +51,30 @@ func startServer(t *testing.T, level string) (cmd *exec.Cmd, baseURL string, key
 
 func startServerWith(t *testing.T, level string, apiWriteTimeout, baseHttpPort int) (cmd *exec.Cmd, baseURL string, key string, out *bytes.Buffer) {
 	t.Helper()
+	ps := startServerOpts(t, serverOpts{Level: level, WriteTimeout: apiWriteTimeout, BaseHttpPort: baseHttpPort})
+	return ps.Cmd, ps.BaseURL, ps.Key, ps.Out
+}
+
+// serverOpts customises the config of a spawned server.
+type serverOpts struct {
+	Level        string
+	WriteTimeout int
+	BaseHttpPort int
+	APIExtra     map[string]any // merged into apiServer
+	ZipExtra     map[string]any // merged into zipReport
+	Prometheus   map[string]any // sets the prometheus section when non-nil
+	TLS          bool           // BaseURL uses https
+}
+
+type procServer struct {
+	Cmd     *exec.Cmd
+	BaseURL string
+	Key     string
+	Out     *bytes.Buffer
+}
+
+func startServerOpts(t *testing.T, o serverOpts) *procServer {
+	t.Helper()
 	bin := buildServerBinary(t)
 
 	l, err := net.Listen("tcp", "localhost:0")
@@ -58,37 +82,48 @@ func startServerWith(t *testing.T, level string, apiWriteTimeout, baseHttpPort i
 	port := l.Addr().(*net.TCPAddr).Port
 	require.NoError(t, l.Close())
 
-	key = strings.Repeat("ab", 32)
+	key := strings.Repeat("ab", 32)
+	api := map[string]any{
+		"host":                   "localhost",
+		"port":                   port,
+		"readTimeout":            600,
+		"writeTimeout":           o.WriteTimeout,
+		"authTokenHeader":        "X-Auth-Key",
+		"authTokenSecret":        key,
+		"defaultSecurityHeaders": true,
+	}
+	for k, v := range o.APIExtra {
+		api[k] = v
+	}
+	zr := map[string]any{
+		"readTimeoutSeconds":  300,
+		"writeTimeoutSeconds": 300,
+		"concurrency":         1,
+		"baseHttpPort":        o.BaseHttpPort,
+		"enableMetrics":       false,
+	}
+	for k, v := range o.ZipExtra {
+		zr[k] = v
+	}
 	cfg := map[string]any{
-		"apiServer": map[string]any{
-			"host":                   "localhost",
-			"port":                   port,
-			"readTimeout":            600,
-			"writeTimeout":           apiWriteTimeout,
-			"authTokenHeader":        "X-Auth-Key",
-			"authTokenSecret":        key,
-			"defaultSecurityHeaders": true,
-		},
-		"zipReport": map[string]any{
-			"readTimeoutSeconds":  300,
-			"writeTimeoutSeconds": 300,
-			"concurrency":         1,
-			"baseHttpPort":        baseHttpPort,
-			"enableMetrics":       false,
-		},
+		"apiServer": api,
+		"zipReport": zr,
 		"log": map[string]any{
-			"level":   level,
+			"level":   o.Level,
 			"format":  "pretty",
 			"noColor": true,
 		},
+	}
+	if o.Prometheus != nil {
+		cfg["prometheus"] = o.Prometheus
 	}
 	data, err := json.Marshal(cfg)
 	require.NoError(t, err)
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	require.NoError(t, os.WriteFile(cfgPath, data, 0o600))
 
-	out = &bytes.Buffer{}
-	cmd = exec.Command(bin, "-c", cfgPath)
+	out := &bytes.Buffer{}
+	cmd := exec.Command(bin, "-c", cfgPath)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	require.NoError(t, cmd.Start())
@@ -110,7 +145,11 @@ func startServerWith(t *testing.T, level string, apiWriteTimeout, baseHttpPort i
 		require.True(t, time.Now().Before(deadline), "server did not start listening")
 		time.Sleep(100 * time.Millisecond)
 	}
-	return cmd, "http://" + addr, key, out
+	scheme := "http://"
+	if o.TLS {
+		scheme = "https://"
+	}
+	return &procServer{Cmd: cmd, BaseURL: scheme + addr, Key: key, Out: out}
 }
 
 func postRender(baseURL, key, fixture string, fields map[string]string) (*http.Response, error) {
