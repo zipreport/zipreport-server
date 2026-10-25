@@ -48,6 +48,10 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - An empty or invalid `prometheus.endpoint` and a `prometheus.port` above 65535 are refused at startup instead of panicking
 - Startup now refuses a `baseHttpPort` range that exceeds port 65535 or overlaps `apiServer.port` or (with metrics enabled) `prometheus.port`, and `apiServer.port` equal to `prometheus.port`
 - The metrics server now has read-header, read, write and idle timeouts
+- An active CONNECT tunnel (for example a long HTTPS download) is no longer cut after 60s because one direction was quiet; a tunnel closes only when neither direction moves data for 60s
+- Chrome profile directories (`/tmp/rod/user-data/*`) are now removed when a browser is discarded, relaunched or shut down, instead of accumulating
+- The Chrome for Testing download no longer hangs on a stalled connection (2 minute stall limit, 60s response-header timeout) and is capped at 512 MiB
+- On macOS the Chrome for Testing archive is extracted with its framework symlinks intact; absolute and `..` link targets are refused
 
 ### Security
 - Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README

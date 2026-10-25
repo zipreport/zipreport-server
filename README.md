@@ -87,8 +87,12 @@ The daemon also relies on the creation of ephemeral http servers on localhost as
 - Each job's browser traffic, loopback included, goes through a per-job egress proxy. It resolves names itself and
   refuses a destination if any resolved address is loopback, link-local, private, otherwise non-public, or belongs to
   a local interface. Public hosts, the job's own server and hosts permitted by `zipReport.egressAllow` (CIDRs or
-  exact `host:port`) work. No `egressAllow` entry can open another job's server, the proxy, the API or the metrics
-  port on a local address. If the page does not reach its own server through the proxy, the job fails.
+  exact `host:port`) work. No `egressAllow` entry can open, on loopback and local addresses, other jobs' render
+  ports (the job's own server is reached through its `localhost:PORT` name), the job's own proxy port, the API port
+  or, if enabled, the metrics port. Allowing loopback ranges (e.g. `127.0.0.0/8`) still exposes other local services,
+  including other jobs' egress proxies and Chrome's DevTools port. An entry covering Kubernetes Service/pod or Docker
+  bridge CIDRs can reach this or other replicas' API and metrics ports through non-local addresses, which the
+  hard-deny list does not cover. If the page does not reach its own server through the proxy, the job fails.
 - Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy; they are refused
   and counted in the "blocked network requests" warning logged per job.
 - Residual risks of the egress proxy:
