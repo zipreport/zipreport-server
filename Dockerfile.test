@@ -1,4 +1,5 @@
-FROM cgr.dev/chainguard/wolfi-base
+# Base image is pinned by digest; Dependabot (docker ecosystem) bumps the digest.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 # Go toolchain + git for module fetches, plus Chromium runtime libraries.
 # Package set mirrors the runtime Dockerfile.
