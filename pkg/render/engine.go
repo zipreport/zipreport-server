@@ -696,8 +696,26 @@ func (e *Engine) Shutdown() {
 		// subsequent calls fail; use non-panicking Close to handle this.
 		_ = p.Context(blueprint.ShutdownContext()).Close()
 	})
+	e.closeSharedBrowser()
 	e.cleanupLaunchers()
 	e.ServerPool.Shutdown()
+}
+
+// closeSharedBrowser asks the shared Chrome to exit, so its profile cleanup need not wait out the grace
+// period. Errors are ignored: a dead or unreachable Chrome falls through to cleanupLaunchers.
+func (e *Engine) closeSharedBrowser() {
+	e.launcherMx.Lock()
+	url := e.launcherURL
+	e.launcherMx.Unlock()
+	if url == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	b := rod.New().ControlURL(url).Context(ctx)
+	if b.Connect() == nil {
+		_ = b.Close()
+	}
 }
 
 // cleanupLaunchers removes the profiles of every launched browser still known (jobs in flight are not
