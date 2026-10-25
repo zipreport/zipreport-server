@@ -23,6 +23,9 @@ import (
 // The SHA-256 hashes in checksums MUST be updated together with Version.
 const Version = "156.0.8078.47"
 
+// maxDownloadBytes caps the Chrome archive (about 200 MB) before it is hashed.
+const maxDownloadBytes = 512 << 20
+
 // platforms maps GOOS_GOARCH to the Chrome for Testing platform name.
 var platforms = map[string]string{
 	"darwin_amd64":  "mac-x64",
@@ -141,7 +144,11 @@ func Download() (string, error) {
 	fmt.Printf("Downloading Chrome for Testing from %s\n", url)
 
 	// Download to temp file
-	resp, err := http.Get(url)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	// no overall timeout: the archive is ~200 MB and slow links must not fail; CopyLimited detects stalls
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
@@ -159,7 +166,7 @@ func Download() (string, error) {
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body)
+	written, err := CopyLimited(io.MultiWriter(tmpFile, hasher), resp.Body, maxDownloadBytes, 2*time.Minute)
 	if err != nil {
 		_ = tmpFile.Close()
 		return "", fmt.Errorf("download failed: %w", err)
