@@ -11,14 +11,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// sharedLauncherMode mirrors needsNoSandbox in pkg/render/engine.go: when true the engine
+// uses one shared no-sandbox Chrome.
+func sharedLauncherMode() bool {
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		return true
+	}
+	for _, f := range []string{"/.dockerenv", "/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+}
+
+func TestSharedLauncherMode(t *testing.T) {
+	for _, k := range []string{"CI", "GITHUB_ACTIONS", "KUBERNETES_SERVICE_HOST"} {
+		v := "true"
+		if k == "KUBERNETES_SERVICE_HOST" {
+			v = "x"
+		}
+		t.Run(k, func(t *testing.T) {
+			for _, o := range []string{"CI", "GITHUB_ACTIONS", "KUBERNETES_SERVICE_HOST"} {
+				t.Setenv(o, "")
+			}
+			t.Setenv(k, v)
+			assert.True(t, sharedLauncherMode())
+		})
+	}
+}
+
 // TestRenderJob_RelaunchedSharedBrowserKeepsSiteIsolation tests that the shared Chrome relaunched after a crash
 // is not started with the site-isolation-disabling flags
 func TestRenderJob_RelaunchedSharedBrowserKeepsSiteIsolation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs Chrome")
 	}
-	if _, err := os.Stat("/.dockerenv"); err != nil {
-		t.Skip("shared-launcher mode only applies in containers")
+	if !sharedLauncherMode() {
+		t.Skip("shared-launcher mode only applies in containers and CI")
 	}
 
 	_, engine, _, cancel := setupConcurrentServer(t, 1)

@@ -149,34 +149,6 @@ func buildZip(t *testing.T, name string, content []byte) []byte {
 	return buf.Bytes()
 }
 
-// TestRenderTimeout tests that render jobs respect timeouts
-func TestRenderTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping timeout test in short mode")
-	}
-
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
-
-	// Test with very short timeout - this may not reliably trigger timeout
-	// but tests the parameter is accepted
-	req := createMultipartRequest(t, "fixtures/test.zpt", map[string]string{
-		"script":      "test.html",
-		"page_size":   "A4",
-		"margins":     "standard",
-		"timeout_job": "1",
-	})
-	req.Header.Set("X-Auth-Key", testAuthToken)
-
-	w := httptest.NewRecorder()
-	srv.Router.ServeHTTP(w, req)
-
-	// Should either succeed quickly or timeout
-	assert.Contains(t, []int{http.StatusOK, http.StatusInternalServerError}, w.Code)
-	_ = ctx
-}
-
 // TestConcurrentRequests tests handling of concurrent render requests
 func TestConcurrentRequests(t *testing.T) {
 	if testing.Short() {

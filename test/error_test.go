@@ -3,6 +3,7 @@ package test
 import (
 	"archive/zip"
 	"bytes"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"zipreport-server/internal/apiserver"
 )
 
 // TestError_CorruptZip tests that a corrupt ZIP file returns 400
@@ -62,8 +65,8 @@ func TestError_MissingIndexFile(t *testing.T) {
 	_ = ctx
 }
 
-// TestError_ZeroTimeout tests that timeout_job=0 uses the default and render succeeds
-func TestError_ZeroTimeout(t *testing.T) {
+// TestError_ZeroTimeoutRendersWithinOneSecondBudget tests that timeout_job=0, clamped to 1s, still renders a trivial report
+func TestError_ZeroTimeoutRendersWithinOneSecondBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping zero timeout test in short mode")
 	}
@@ -84,9 +87,9 @@ func TestError_ZeroTimeout(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Router.ServeHTTP(w, req)
 
-	// timeout_job=0 should fall back to default timeout, render should succeed
+	// timeout_job=0 is clamped to 1s; the trivial report renders within it
 	assert.Equal(t, http.StatusOK, w.Code,
-		"Zero timeout should use default and succeed")
+		"Zero timeout is clamped to 1s and a trivial report still renders")
 	assert.True(t, isValidPDF(w.Body.Bytes()), "Response should be a valid PDF")
 
 	time.Sleep(100 * time.Millisecond)
@@ -240,4 +243,60 @@ func TestRender_ClosesUploadedFileAfterRender(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	assertNoMultipartFd(t)
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// TestRenderEndpoint_OversizedUploadRejected tests that a request body over MaxUploadBytes is rejected
+func TestRenderEndpoint_OversizedUploadRejected(t *testing.T) {
+	srv := setupAPIServer(t)
+
+	pr, pw := io.Pipe()
+	defer func() { _ = pr.Close() }()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		err := func() error {
+			if err := mw.WriteField("page_size", "A4"); err != nil {
+				return err
+			}
+			if err := mw.WriteField("margins", "standard"); err != nil {
+				return err
+			}
+			part, err := mw.CreateFormFile("report", "test.zpt")
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(filepath.Join("fixtures", "test.zpt"))
+			if err != nil {
+				return err
+			}
+			defer func() { _ = f.Close() }()
+			if _, err := io.Copy(part, f); err != nil {
+				return err
+			}
+			pad, err := mw.CreateFormFile("padding", "padding.bin")
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(pad, io.LimitReader(zeroReader{}, apiserver.MaxUploadBytes+1)); err != nil {
+				return err
+			}
+			return mw.Close()
+		}()
+		_ = pw.CloseWithError(err)
+	}()
+
+	req := httptest.NewRequest("POST", "/v2/render", pr)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Auth-Key", testAuthToken)
+
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body over MaxUploadBytes must be rejected")
 }

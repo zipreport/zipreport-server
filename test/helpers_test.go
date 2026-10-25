@@ -8,8 +8,27 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"testing"
 	"unicode/utf16"
+
+	"github.com/stretchr/testify/require"
 )
+
+var pdfMediaBoxRe = regexp.MustCompile(`/MediaBox\s*\[\s*([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s*\]`)
+
+// pdfMediaBox returns the width and height, in points, of the first /MediaBox in the PDF.
+func pdfMediaBox(t *testing.T, pdf []byte) (w, h float64) {
+	t.Helper()
+	m := pdfMediaBoxRe.FindSubmatch(pdf)
+	require.NotNil(t, m, "no /MediaBox found")
+	var v [4]float64
+	for i := range v {
+		f, err := strconv.ParseFloat(string(m[i+1]), 64)
+		require.NoError(t, err)
+		v[i] = f
+	}
+	return v[2] - v[0], v[3] - v[1]
+}
 
 // parsePDFPageCount returns the number of pages in a PDF byte slice.
 // Uses regex on raw PDF to count /Type /Page entries (excluding /Type /Pages).
