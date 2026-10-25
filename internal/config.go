@@ -94,7 +94,10 @@ func (c *ZipReportConfig) Validate() error {
 		return errors.New("concurrency must be greater than zero")
 	}
 	if c.BaseHttpPort < 1024 {
-		return errors.New("baseHttpPort must be greater than 1024")
+		return errors.New("baseHttpPort must be at least 1024")
+	}
+	if c.BaseHttpPort+c.Concurrency-1 > 65535 {
+		return errors.New("baseHttpPort + concurrency - 1 must not exceed 65535")
 	}
 	for i, s := range c.EgressAllow {
 		if _, err := egress.ParseRule(s); err != nil {
@@ -167,6 +170,18 @@ func (c *Config) Validate() error {
 		}
 		if err := c.Prometheus.Validate(); err != nil {
 			return err
+		}
+	}
+	first, last := c.ZipReport.BaseHttpPort, c.ZipReport.BaseHttpPort+c.ZipReport.Concurrency-1
+	if c.ApiServer.Port >= first && c.ApiServer.Port <= last {
+		return fmt.Errorf("apiServer.port %d is inside the report port range %d-%d", c.ApiServer.Port, first, last)
+	}
+	if c.ZipReport.EnableMetrics {
+		if c.Prometheus.Port >= first && c.Prometheus.Port <= last {
+			return fmt.Errorf("prometheus.port %d is inside the report port range %d-%d", c.Prometheus.Port, first, last)
+		}
+		if c.Prometheus.Port == c.ApiServer.Port {
+			return errors.New("prometheus.port must differ from apiServer.port")
 		}
 	}
 	if c.Logging == nil {

@@ -229,3 +229,48 @@ func TestPrometheusConfig_ValidateEndpointAndPort(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_PortRanges(t *testing.T) {
+	base := func() *internal.Config {
+		cfg := configWithSecret(strongSecret)
+		cfg.ZipReport.BaseHttpPort = 22000
+		cfg.ZipReport.Concurrency = 8
+		cfg.ZipReport.EnableMetrics = true
+		return cfg
+	}
+	require.NoError(t, base().Validate())
+
+	t.Run("range_overflow", func(t *testing.T) {
+		cfg := base()
+		cfg.ZipReport.BaseHttpPort = 65530
+		cfg.ZipReport.Concurrency = 8
+		assert.Error(t, cfg.Validate())
+	})
+	t.Run("range_ends_at_65535", func(t *testing.T) {
+		cfg := base()
+		cfg.ZipReport.BaseHttpPort = 65528
+		cfg.ZipReport.Concurrency = 8
+		assert.NoError(t, cfg.Validate())
+	})
+	t.Run("api_in_range", func(t *testing.T) {
+		cfg := base()
+		cfg.ApiServer.Port = 22003
+		assert.Error(t, cfg.Validate())
+	})
+	t.Run("metrics_in_range", func(t *testing.T) {
+		cfg := base()
+		cfg.Prometheus.Port = 22007
+		assert.Error(t, cfg.Validate())
+	})
+	t.Run("equal_ports", func(t *testing.T) {
+		cfg := base()
+		cfg.Prometheus.Port = cfg.ApiServer.Port
+		assert.Error(t, cfg.Validate())
+	})
+	t.Run("metrics_in_range_but_disabled", func(t *testing.T) {
+		cfg := base()
+		cfg.ZipReport.EnableMetrics = false
+		cfg.Prometheus.Port = 22003
+		assert.NoError(t, cfg.Validate())
+	})
+}
