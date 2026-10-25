@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -487,30 +488,39 @@ func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); copyIdle(up, client, p.TunnelIdle) }()
-	go func() { defer wg.Done(); copyIdle(client, up, p.TunnelIdle) }()
+	go func() { defer wg.Done(); copyIdle(up, client, p.TunnelIdle, &last) }()
+	go func() { defer wg.Done(); copyIdle(client, up, p.TunnelIdle, &last) }()
 	wg.Wait()
 }
 
-// copyIdle copies src to dst until either side ends or src is idle for idle, then closes both.
-func copyIdle(dst, src net.Conn, idle time.Duration) {
+// copyIdle copies src to dst until either side ends or the tunnel (both directions, tracked in last) has
+// moved no data for idle, then closes both.
+func copyIdle(dst, src net.Conn, idle time.Duration, last *atomic.Int64) {
 	defer func() {
 		_ = dst.Close()
 		_ = src.Close()
 	}()
+	poll := min(5*time.Second, idle/4)
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(idle))
+		_ = src.SetReadDeadline(time.Now().Add(poll))
 		n, err := src.Read(buf)
 		if n > 0 {
+			last.Store(time.Now().UnixNano())
 			_ = dst.SetWriteDeadline(time.Now().Add(idle))
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
 			}
+			last.Store(time.Now().UnixNano())
 		}
 		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) && time.Since(time.Unix(0, last.Load())) < idle {
+				continue
+			}
 			return
 		}
 	}
