@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/log/writer"
@@ -129,10 +130,14 @@ func NewServer(cfg *PrometheusConfig, logger *log.Logger, cs ...prometheus.Colle
 		Router: router,
 		Logger: logger,
 		Server: &http.Server{
-			Addr:      fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-			Handler:   router,
-			TLSConfig: tlsConfig,
-			ErrorLog:  writer.NewErrorLog(logger), // error log wrapper
+			Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+			Handler:           router,
+			TLSConfig:         tlsConfig,
+			ErrorLog:          writer.NewErrorLog(logger), // error log wrapper
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
 		},
 	}
 
