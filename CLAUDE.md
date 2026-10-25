@@ -16,7 +16,7 @@ make test-short         # Run tests that don't require Chrome (fast, CI-safe)
 make test-integration   # Run full test suite including browser-based tests (requires Chrome)
 make test-fixtures      # Regenerate .zpt fixtures from source HTML files
 make fmt                # Format code
-make lint               # Run golangci-lint and govulncheck
+make lint               # Run golangci-lint and govulncheck (requires golangci-lint 2.15.0 built with go >= go.mod, govulncheck 1.9.0; the target checks and prints install commands)
 make docker             # Build Docker image
 make certificate        # Generate self-signed TLS certificates
 ```
