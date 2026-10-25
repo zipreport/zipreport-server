@@ -3,7 +3,7 @@ GOCMD=go
 GOBUILD=$(GOCMD) build -trimpath -buildvcs=false
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
-GOFMT=$(GOCMD) fmt
+GOFMT=gofmt -s -w
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS = -ldflags="-s -w -X main.Version=$(VERSION)"
@@ -33,7 +33,7 @@ clean:
 	rm -f bin/*
 
 fmt:
-	$(GOFMT) ./...
+	$(GOFMT) .
 
 lint:
 	golangci-lint run ./...
