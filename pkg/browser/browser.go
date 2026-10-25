@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // Version is the pinned Chrome for Testing build. To bump it, use the Stable
@@ -204,6 +207,58 @@ func Download() (string, error) {
 	binPath := BinPath()
 	fmt.Printf("Installed: %s\n", binPath)
 	return binPath, nil
+}
+
+// CopyLimited copies src to dst, reading at most limit bytes: it fails with "download exceeds <limit>
+// bytes" if more arrive. If no data arrives for stall, src is closed and the copy fails with "download
+// stalled". It closes src only on a stall; the caller still closes it.
+func CopyLimited(dst io.Writer, src io.ReadCloser, limit int64, stall time.Duration) (int64, error) {
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	var stalled atomic.Bool
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		t := time.NewTicker(max(stall/4, time.Millisecond))
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, last.Load())) >= stall {
+					stalled.Store(true)
+					_ = src.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	n, err := io.Copy(dst, io.LimitReader(&progressReader{r: src, last: &last}, limit+1))
+	if stalled.Load() {
+		return n, errors.New("download stalled")
+	}
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("download exceeds %d bytes", limit)
+	}
+	return n, nil
+}
+
+type progressReader struct {
+	r    io.Reader
+	last *atomic.Int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.last.Store(time.Now().UnixNano())
+	}
+	return n, err
 }
 
 // extractZip extracts a zip archive to the destination directory.
