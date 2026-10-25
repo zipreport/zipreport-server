@@ -53,6 +53,7 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - Zip entries are now streamed and size-checked while they are read, and requests whose `Host` header does not match the report server are rejected with 421
 - The Docker image is scanned with Trivy before it is pushed and nothing is published when the scan fails; the gate is CRITICAL-only for fixed OS vulnerabilities, as configured (it previously failed on any severity)
 - CI and release workflows pin third-party actions by commit SHA and tools by version, default to read-only tokens, do not persist checkout credentials, and expose Dependency-Track secrets only to the upload step
+- Release source SBOMs are scanned with Grype before the image is pushed or the release created; a failure publishes nothing
 
 ## [2.4.1]
 

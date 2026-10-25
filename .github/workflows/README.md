@@ -4,16 +4,17 @@ This directory contains GitHub Actions workflows for CI/CD automation.
 
 ## Releasing
 
-Push a `v*` tag **or** create the release in the GitHub UI; both run `release.yml`, which:
+Push a `v*` tag (the supported path). `release.yml` validates the commit, generates, scans (Grype, fails on high) and
+signs the source SBOMs, then builds, scans (Trivy, fails on fixed CRITICAL OS vulnerabilities) and publishes the image,
+then creates the release and attaches all SBOMs. Nothing is pushed or released if any of these fails.
 
-1. validates the tagged commit (`go vet`, `gofmt`, `make build`),
-2. builds, scans and publishes the Docker image (`docker.yml`),
-3. creates the GitHub release,
-4. attaches the image SBOMs and runs the source SBOM workflow (`sbom.yml`).
+### Creating the release in the GitHub UI
 
-Nothing is published if the image scan fails. If the release is created in the UI, untick "Generate release
-notes" there (or leave the notes to the workflow): the workflow appends generated notes to an existing release,
-which duplicates them if the UI already generated some.
+With a **new** tag, the UI creates the tag and publishes the release at once, so the release is public before the
+scans run; if they fail, delete the release. With an **existing** tag no workflow runs (use "Re-run failed jobs" on the
+failed `Release` run instead, or push a new tag). Untick "Generate release notes" in the UI (or leave the notes to the
+workflow): the workflow appends generated notes to an existing release, which duplicates them if the UI already
+generated some.
 
 ## Workflows
 
@@ -45,11 +46,12 @@ Runs on `v*` tag pushes (and is the single path that publishes a release; see "R
 **Jobs, in order:**
 
 1. **validate** - `go vet`, `gofmt`, `make build`
-2. **docker** - Calls `docker.yml` (permissions: `contents: read`, `packages: write`, `security-events: write`)
-3. **release** - Creates the GitHub release with generated notes (permissions: `contents: write`)
-4. **attach_image_sbom** - Downloads the `sbom-docker-<commit-sha>` artifact produced by `docker.yml` and attaches
-   `bom-cyclonedx.json` and `bom-spdx.json` to the release (permissions: `contents: write`)
-5. **sbom** - Calls `sbom.yml` with `secrets: inherit` (permissions: `contents: write`, `id-token: write`)
+2. **sbom** - Calls `sbom.yml` with `secrets: inherit` (permissions: `contents: read`, `id-token: write`)
+3. **docker** - Calls `docker.yml` (permissions: `contents: read`, `packages: write`, `security-events: write`)
+4. **release** - Creates the GitHub release with generated notes (permissions: `contents: write`)
+5. **attach_sboms** - Downloads the `sbom-docker-<commit-sha>` and `sbom-source-<commit-sha>` artifacts and attaches
+   `bom-cyclonedx.json`, `bom-spdx.json`, `sbom-cyclonedx.json`, `sbom-spdx.json` and the two `.sig` files to the
+   release (permissions: `contents: write`)
 
 A called workflow can never hold more permissions than the calling job grants.
 
@@ -90,11 +92,11 @@ Builds, scans and publishes Docker images to GitHub Container Registry (ghcr.io)
 
 ### sbom.yml - Source SBOMs and Scan
 
-Callable from `release.yml` (it has no other trigger). Permissions: `contents: write`, `id-token: write` (keyless signing), set on the job.
+Callable from `release.yml` (it has no other trigger). Permissions: `contents: read`, `id-token: write` (keyless signing), set on the job.
 
 **Steps:** generates a CycloneDX SBOM (`cyclonedx-gomod`) and an SPDX SBOM (Syft) from the source, scans both with
-Grype (fails on high severity), signs both with Cosign, and attaches `sbom-cyclonedx.json`, `sbom-spdx.json` and their
-`.sig` files to the release. Tool versions are pinned.
+Grype (fails on high severity), signs both with Cosign, and uploads `sbom-cyclonedx.json`, `sbom-spdx.json` and their
+`.sig` files as the `sbom-source-<sha>` artifact (`release.yml` attaches them to the release). Tool versions are pinned.
 
 If the `DTRACK_API_KEY` and `DTRACK_HOST` secrets are both set, the CycloneDX SBOM is also uploaded to Dependency-Track.
 A job-level `HAS_DTRACK` flag (`true`/`false`, computed from the secrets, never their values) gates that step, and the
@@ -174,6 +176,9 @@ The CI workflow runs `govulncheck` to detect known vulnerabilities in Go depende
 **From the Docker workflow run:**
 - Download the `sbom-docker-<commit-sha>` artifact
 
+**From the Release workflow run:**
+- Download the `sbom-source-<sha>` artifact
+
 **From Docker Images:**
 - Docker images include embedded SBOM and provenance attestations
 - Inspect with: `docker buildx imagetools inspect ghcr.io/<owner>/<repo>:tag --format "{{ json .SBOM }}"`
@@ -232,7 +237,14 @@ If Docker builds fail:
 If the Trivy scan fails the build (nothing is pushed or released):
 1. Check the job log for the specific CVEs
 2. Update the base image or affected packages
-3. Trigger a manual rebuild via `workflow_dispatch` after fixes (re-push the tag or re-run the release workflow for a release)
+3. Trigger a manual rebuild via `workflow_dispatch` after fixes; for a release, delete the tag and push it again at the fixed commit ("Re-run failed jobs" only helps when the failure was transient)
+
+### Grype Scan Failures
+
+If the Grype scan of the source SBOMs fails the release (nothing is pushed or released):
+1. Check the job log for the specific vulnerabilities
+2. Update the affected dependency and commit the fix
+3. Delete the tag and push it again at the fixed commit ("Re-run failed jobs" only helps when the failure was transient, e.g. a vulnerability-database download error)
 
 ### Permission Issues
 
