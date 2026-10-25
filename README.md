@@ -130,10 +130,10 @@ is triggered only after all dynamic canvas elements were generated.
 | report            | Yes       | Report file                                                   |
 | page_size         | Yes       | Page size (A5/A4/A3/Letter/Legal/Tabloid)                     |
 | margins           | Yes       | Margin type (none/minimal/standard/custom)                    |
-| margin_left       | No        | Margin in inches, used only if margins=custom (default 0)  |
-| margin_right      | No        | Margin in inches, used only if margins=custom (default 0)  |
-| margin_top        | No        | Margin in inches, used only if margins=custom (default 0)  |
-| margin_bottom     | No        | Margin in inches, used only if margins=custom (default 0)  |
+| margin_left       | No        | Margin in inches, used only if margins=custom (default 0)     |
+| margin_right      | No        | Margin in inches, used only if margins=custom (default 0)     |
+| margin_top        | No        | Margin in inches, used only if margins=custom (default 0)     |
+| margin_bottom     | No        | Margin in inches, used only if margins=custom (default 0)     |
 | landscape         | No        | If true, print in landscape                                   |
 | script            | No        | Main html file (default report.html)                          |
 | settling_time     | No        | Settling time, in ms (default 200ms, see below)               |
@@ -150,7 +150,7 @@ for a 64-bit integer) falls back to the default. Booleans accept `1, t, T, TRUE,
 `0, f, F, FALSE, false, False`; anything else is treated as the default. The `margin_*` values must be finite
 and non-negative; a non-numeric, non-finite or negative value is rejected with 400 whatever the margin type. With
 `margins=custom`, left+right must not exceed the page width and top+bottom the page height (as oriented), otherwise 400.
-Request bodies over 128 MiB are rejected (400).
+Request bodies over 128 MiB are rejected with 413.
 
 **settling_time** (default: 200)
 
