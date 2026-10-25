@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
       id-token: write
     env:
       HAS_DTRACK: "${{ secrets.DTRACK_API_KEY != '' && secrets.DTRACK_HOST != '' }}"
@@ -81,11 +81,13 @@ jobs:
       - name: Sign SPDX SBOM
         run: cosign sign-blob --yes sbom-spdx.json --output-signature sbom-spdx.json.sig
 
-      - name: Upload SBOMs to release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v7
         with:
-          files: |
+          name: sbom-source-${{ github.sha }}
+          path: |
             sbom-cyclonedx.json
             sbom-cyclonedx.json.sig
             sbom-spdx.json
             sbom-spdx.json.sig
+          retention-days: 90
