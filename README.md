@@ -197,7 +197,7 @@ Prometheus metrics endpoint. Besides the default internal Go metrics, the follow
 | total_requests        | counter   | Total conversion requests                                            |
 | total_request_success | counter   | Number of successful API calls                                       |
 | total_request_error   | counter   | Number of failed API calls                                           |
-| conversion_time       | histogram | Elapsed conversion time histogram, in seconds. The upper bound is 120 |
+| conversion_time       | histogram | Elapsed conversion time histogram, in seconds. Buckets from 1 s to 600 s (the maximum job timeout); only successful conversions are observed. |
 | current_http_servers  | gauge     | Current internal HTTP server count                                   |
 | current_browsers      | gauge     | Current internal browser instance count                              |
 

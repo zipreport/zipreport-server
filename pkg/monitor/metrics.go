@@ -39,8 +39,8 @@ func NewMetrics() *Metrics {
 		ConversionTime: promauto.NewHistogram(prometheus.HistogramOpts{
 			Name: "conversion_time",
 			Help: "PDF conversion time, in seconds.",
-			// count should be based on render.JobProcessTimeout
-			Buckets: prometheus.LinearBuckets(1, 9, 13),
+			// must cover render.JobMaxTimeout (600 s)
+			Buckets: []float64{1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 450, 600},
 		}),
 	}
 }
