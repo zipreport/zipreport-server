@@ -93,6 +93,9 @@ deployments without a config file mount.
 - `test/concurrency_test.go` — Pool behavior under parallel load
 - `test/metrics_test.go` — Prometheus counter/histogram verification
 - `test/helpers_test.go` — PDF parsing utilities (page count, text search, validity check)
+- `test/pdf_geometry_test.go` — Page size, margin and orientation mapping; MediaBox of rendered PDFs
+- `test/listener_bind_test.go` — Report server and egress proxy bind loopback only
+- `internal/apiserver/render_job_test.go` — In-package: `buildRenderJob` parameter clamps and bool parsing
 - `test/fixtures/` — `.zpt` files and their HTML sources
 
 Tests share a single `monitor.Metrics` instance (avoids Prometheus re-registration panics) and use an incrementing port

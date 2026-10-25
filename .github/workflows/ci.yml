@@ -251,10 +251,45 @@ jobs:
         if: always()
         run: docker rm -f zipreport-e2e-${{ matrix.arch }}
 
+  test-dedicated:
+    name: Test (dedicated launcher)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Install pinned browser
+        run: go run ./cmd/browser-update
+
+      - name: Allow the Chrome sandbox (user namespaces)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Render tests in dedicated-launcher mode
+        timeout-minutes: 10
+        run: |
+          # dedicated mode needs every needsNoSandbox() input absent (CI/GITHUB_ACTIONS are unset by env -u below)
+          { test -z "$KUBERNETES_SERVICE_HOST" && ! test -e /.dockerenv && ! test -e /.containerenv; } || { echo "not dedicated mode"; exit 1; }
+          env -u CI -u GITHUB_ACTIONS go test -v -p 1 -count=1 \
+            -run '^(TestE2E_PDFGeometry|TestE2E_JSEventMode|TestRender_EgressBlocksInternal|TestRender_FailsClosedWhenContextBypassesProxy|TestJobIsolation_StorageNotShared|TestJobIsolation_ContextsDisposed|TestRenderJob_BeforeUnloadBusyPageReleasesSlot|TestRenderJob_BrowserCrashLeavesNoProxy)$' ./test/...
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [ test, lint, build, govulncheck, build-docker, e2e-docker ]
+    needs: [ test, test-dedicated, lint, build, govulncheck, build-docker, e2e-docker ]
     if: always()
     steps:
       - name: Verify all jobs passed
