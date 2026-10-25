@@ -31,7 +31,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -73,7 +73,7 @@ jobs:
           tags: zipreport-server:scan
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-          no-cache: ${{ inputs.no_cache || false }}
+          no-cache: ${{ inputs.no_cache || github.event_name == 'schedule' }}
           cache-from: type=gha
           platforms: linux/amd64
 
@@ -110,7 +110,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
           no-cache: false
-          cache-from: ${{ !inputs.no_cache && 'type=gha' || '' }}
+          cache-from: ${{ !(inputs.no_cache || github.event_name == 'schedule') && 'type=gha' || '' }}
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
           sbom: true

@@ -82,7 +82,7 @@ Builds, scans and publishes Docker images to GitHub Container Registry (ghcr.io)
 **Triggers:**
 - Push to `main` or `master` branches (tagged as `latest`)
 - Called by `release.yml` for `v*` tags (tagged with version number)
-- Daily schedule (06:00 UTC) to pick up base image and dependency patches
+- Daily schedule (06:00 UTC), built without cache, to pick up base image and dependency patches
 - Manual trigger via `workflow_dispatch` (optional `no_cache` input)
 
 **Permissions:**
