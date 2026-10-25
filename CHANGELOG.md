@@ -34,6 +34,9 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
 - Pushing a `v*` tag now publishes the versioned Docker images and the image and source SBOMs (previously only the release was created); a release created in the GitHub UI for an existing tag no longer triggers any build
 - Releases created in the GitHub UI no longer get duplicate `zipreport-zipreport-server_*` SBOM assets
+- A request body over 128 MiB is now answered with 413 instead of 400
+- `X-Forwarded-For` and `X-Real-IP` are ignored unless `apiServer.trustedProxies` is set; with the default `[]` the logged `client_ip` is the socket peer (previously any client could forge it). Set `trustedProxies` when running behind a reverse proxy whose client IPs you want logged
+- The `conversion_time` histogram buckets changed to 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 450 and 600 seconds so slow jobs no longer all land in `+Inf`; dashboards that use the old `le` values need updating
 
 ### Fixed
 - A render whose browser context could not be disposed no longer leaves its egress proxy open forever: the proxy cuts its live connections at once and is closed once the context is disposed or the browser is discarded; if disposal keeps failing on a live browser it stays open in deny-all mode (bounded to that job)
@@ -41,6 +44,10 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - The uploaded report file is now closed when the request ends
 - A page with a `beforeunload` handler and a busy renderer no longer holds its render slot, browser and egress proxy forever; page close is bounded to 5s
 - Console handling no longer waits on the renderer, so a console flood cannot grow memory without bound; with `enableConsoleLogging`, at most 200 console and browser log entries are logged per job and object arguments are logged as Chrome's short description instead of their JSON value
+- Non-finite (`NaN`, `Inf`) margins, and `margins=custom` values that consume the whole page, are now refused with 400 up front instead of failing after the render
+- An empty or invalid `prometheus.endpoint` and a `prometheus.port` above 65535 are refused at startup instead of panicking
+- Startup now refuses a `baseHttpPort` range that exceeds port 65535 or overlaps `apiServer.port` or (with metrics enabled) `prometheus.port`, and `apiServer.port` equal to `prometheus.port`
+- The metrics server now has read-header, read, write and idle timeouts
 
 ### Security
 - Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
