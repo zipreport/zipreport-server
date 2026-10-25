@@ -4,6 +4,8 @@ package browser
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 
 // Version is the pinned Chrome for Testing build. To bump it, use the Stable
 // entry of https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json
+// The SHA-256 hashes in checksums MUST be updated together with Version.
 const Version = "156.0.8078.47"
 
 // platforms maps GOOS_GOARCH to the Chrome for Testing platform name.
@@ -25,6 +28,41 @@ var platforms = map[string]string{
 	"linux_arm64":   "linux-arm64",
 	"windows_386":   "win32",
 	"windows_amd64": "win64",
+}
+
+// checksums maps GOOS_GOARCH (same keys as platforms) to the SHA-256 of the
+// Chrome for Testing zip for Version. Google publishes no checksums, so these
+// were computed from a download whose MD5 matched the x-goog-hash header.
+var checksums = map[string]string{
+	"darwin_amd64":  "5a38b8e3d621514fff0775dcae678a152ce378890188c88eef79fc97aa59fccd",
+	"darwin_arm64":  "ad7f2b49a4dc679af286b1b1b386670d93ca7868079f69012d21ba0ac8293df3",
+	"linux_amd64":   "e6c94490f0b6b337225aeb2d2a5034858516b7017356980ba94f5176d8774a50",
+	"linux_arm64":   "9e37000e3ee2731e45e475a6a2eac587d3c0ee5f8aef7cab5211ecd52cf3fb7b",
+	"windows_386":   "b953cca3ad09df2cde6260c3ce57265b8a166dcecb01dea3425cd6510d756a3a",
+	"windows_amd64": "a4e0d57245e167e98a9d465af1e3774d2b4ec9f04e483d19bcd97a6f63cf46dd",
+}
+
+// ChecksumFor returns the pinned SHA-256 of the Chrome for Testing zip for a platform.
+func ChecksumFor(goos, goarch string) (string, error) {
+	c, ok := checksums[goos+"_"+goarch]
+	if !ok {
+		return "", fmt.Errorf("no pinned checksum for platform: %s/%s", goos, goarch)
+	}
+	return c, nil
+}
+
+// VerifySHA256 returns an error unless the hex SHA-256 digest got equals want.
+func VerifySHA256(got, want string) error {
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("checksum mismatch: got %s, want %s", got, want)
+	}
+	return nil
+}
+
+// VerifyBytes checks data against an expected hex SHA-256.
+func VerifyBytes(data []byte, want string) error {
+	sum := sha256.Sum256(data)
+	return VerifySHA256(hex.EncodeToString(sum[:]), want)
 }
 
 // DownloadURLFor returns the Chrome for Testing download URL for a platform.
@@ -92,6 +130,11 @@ func Download() (string, error) {
 		return "", err
 	}
 
+	want, err := ChecksumFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return "", err
+	}
+
 	fmt.Printf("Downloading Chrome for Testing from %s\n", url)
 
 	// Download to temp file
@@ -112,12 +155,17 @@ func Download() (string, error) {
 	tmpPath := tmpFile.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	written, err := io.Copy(tmpFile, resp.Body)
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body)
 	if err != nil {
 		_ = tmpFile.Close()
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 	_ = tmpFile.Close()
+
+	if err := VerifySHA256(hex.EncodeToString(hasher.Sum(nil)), want); err != nil {
+		return "", fmt.Errorf("download verification failed: %w", err)
+	}
 
 	fmt.Printf("Downloaded %d bytes\n", written)
 
