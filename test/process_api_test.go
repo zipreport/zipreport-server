@@ -330,3 +330,76 @@ func TestProcess_ConsoleLoggingIsCapped(t *testing.T) {
 		})
 	}
 }
+
+// TestProcess_ConsoleLoggingDescribesObjects tests that console object arguments are logged by description, not serialised
+func TestProcess_ConsoleLoggingDescribesObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Chrome")
+	}
+	zipBytes := buildZipFiles(t, map[string][]byte{
+		"report.html": []byte(`<html><body><script>console.log('zpt-desc-probe', {zptKey: 'zpt-json-value'})</script>x</body></html>`),
+	})
+	ps := startServerOpts(t, serverOpts{
+		Level: "info", WriteTimeout: 600, BaseHttpPort: 31600,
+		ZipExtra: map[string]any{"enableConsoleLogging": true},
+	})
+	resp, err := postRenderWith(&http.Client{Timeout: 60 * time.Second}, ps.BaseURL, ps.Key, "r.zpt", zipBytes,
+		map[string]string{"script": "report.html", "page_size": "A4", "margins": "standard", "js_event": "false"})
+	require.NoError(t, err)
+	body := readAll(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.True(t, strings.HasPrefix(string(body), "%PDF-"))
+
+	stopServer(t, ps)
+	out := ps.Out.String()
+	assert.Contains(t, out, "[zpt-desc-probe Object]")
+	assert.NotContains(t, out, "zpt-json-value")
+}
+
+// TestProcess_ConsoleLoggingCapsBrowserLogEntries tests that browser log entries share the per-job console cap
+func TestProcess_ConsoleLoggingCapsBrowserLogEntries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Chrome")
+	}
+	for i, jsEvent := range []bool{false, true} {
+		t.Run("js_event_"+strconv.FormatBool(jsEvent), func(t *testing.T) {
+			var page strings.Builder
+			page.WriteString("<html><body>")
+			for n := 0; n < 300; n++ {
+				fmt.Fprintf(&page, `<img src="zpt-missing-%d.png">`, n)
+			}
+			if jsEvent {
+				page.WriteString(`<script>window.addEventListener('load',function(){console.log('zpt-view-ready')})</script>`)
+			}
+			page.WriteString("</body></html>")
+			zipBytes := buildZipFiles(t, map[string][]byte{"report.html": []byte(page.String())})
+
+			ps := startServerOpts(t, serverOpts{
+				Level: "info", WriteTimeout: 600, BaseHttpPort: 31610 + i*10,
+				ZipExtra: map[string]any{"enableConsoleLogging": true},
+			})
+			resp, err := postRenderWith(&http.Client{Timeout: 60 * time.Second}, ps.BaseURL, ps.Key, "r.zpt", zipBytes,
+				map[string]string{"script": "report.html", "page_size": "A4", "margins": "standard", "js_event": strconv.FormatBool(jsEvent)})
+			require.NoError(t, err)
+			body := readAll(t, resp)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.True(t, strings.HasPrefix(string(body), "%PDF-"))
+
+			stopServer(t, ps)
+			out := ps.Out.String()
+			n := 0
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, "src=logger") {
+					n++
+				}
+			}
+			t.Logf("browser log lines: %d", n)
+			assert.GreaterOrEqual(t, n, 1)
+			assert.LessOrEqual(t, n, 200)
+			assert.Contains(t, out, "console output truncated")
+			if jsEvent {
+				assert.NotContains(t, out, "waiting for console message timed out")
+			}
+		})
+	}
+}

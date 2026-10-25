@@ -50,10 +50,24 @@ func TestRenderJob_ConsoleObjectFloodKeepsHeapBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs Chrome")
 	}
+	runConsoleObjectFlood(t, false)
+}
 
+// TestRenderJob_ConsoleObjectFloodWithLoggingKeepsHeapBounded tests the same flood with console logging enabled
+func TestRenderJob_ConsoleObjectFloodWithLoggingKeepsHeapBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Chrome")
+	}
+	runConsoleObjectFlood(t, true)
+}
+
+func runConsoleObjectFlood(t *testing.T, logging bool) {
 	_, engine, _, cancel := setupConcurrentServer(t, 1)
 	defer cancel()
 	defer engine.Shutdown()
+	if logging {
+		engine.EnableConsoleLog()
+	}
 
 	job := newInlineJob(t, `<html><body>x<script>window.addEventListener('load',function(){var i=0;for(;;){console.log({n:i++,pad:'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'})}})</script></body></html>`)
 	job.UseJSEvent = true
