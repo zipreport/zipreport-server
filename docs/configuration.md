@@ -232,10 +232,12 @@ read, so Chromium child processes inherit it.
 
 ## Loading Configuration
 
-The server looks for configuration files in the following locations:
+The server reads a single configuration file, given with `-c <path>` (default `config/config.json`, relative to the
+working directory). If the file cannot be read, startup fails.
 
-1. Path specified via `-config` command-line flag
-2. `config/config.json` in the current directory
-3. Default built-in configuration
+- `zipreport-server -sample-config` prints the complete default configuration as JSON; use
+  `zipreport-server -sample-config > config.json` to start a new file.
+- `zipreport-server -version` prints the version.
+- `ZIPREPORT_API_KEY` overrides `apiServer.authTokenSecret` (see [Environment Variables](#environment-variables)).
 
 A sample configuration file is available at `config/config.sample.json`.
