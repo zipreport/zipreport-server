@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A page with a `beforeunload` handler and a busy renderer no longer holds its render slot, browser and egress proxy forever; page close is bounded to 5s
+- Console handling no longer waits on the renderer, so a console flood cannot grow memory without bound; with `enableConsoleLogging`, at most 200 console entries are logged per job and object arguments are logged as Chrome's short description instead of their JSON value
+
 ### Changed
 - Docker base images are pinned by digest (bumped by Dependabot); apk packages still float
 - The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch

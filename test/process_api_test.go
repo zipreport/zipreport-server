@@ -291,3 +291,42 @@ func TestProcess_ConsoleLogging(t *testing.T) {
 		})
 	}
 }
+
+// TestProcess_ConsoleLoggingIsCapped tests that console logging is capped per job and never delays the ready signal
+func TestProcess_ConsoleLoggingIsCapped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
+	for i, jsEvent := range []bool{false, true} {
+		t.Run("js_event_"+strconv.FormatBool(jsEvent), func(t *testing.T) {
+			ready := ""
+			if jsEvent {
+				ready = `console.log('zpt-view-ready');`
+			}
+			zipBytes := buildZipFiles(t, map[string][]byte{
+				"report.html": []byte(`<html><body><script>for(var i=0;i<5000;i++){console.log('zpt-cap-marker-'+i)}` + ready + `</script>x</body></html>`),
+			})
+
+			ps := startServerOpts(t, serverOpts{
+				Level: "info", WriteTimeout: 600, BaseHttpPort: 31370 + i*10,
+				ZipExtra: map[string]any{"enableConsoleLogging": true},
+			})
+			resp, err := postRenderWith(&http.Client{Timeout: 60 * time.Second}, ps.BaseURL, ps.Key, "r.zpt", zipBytes,
+				map[string]string{"script": "report.html", "page_size": "A4", "margins": "standard", "js_event": strconv.FormatBool(jsEvent)})
+			require.NoError(t, err)
+			body := readAll(t, resp)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.True(t, strings.HasPrefix(string(body), "%PDF-"))
+
+			stopServer(t, ps)
+			out := ps.Out.String()
+			n := strings.Count(out, "zpt-cap-marker-")
+			assert.GreaterOrEqual(t, n, 1)
+			assert.LessOrEqual(t, n, 200)
+			assert.Contains(t, out, "console output truncated")
+			if jsEvent {
+				assert.NotContains(t, out, "waiting for console message timed out")
+			}
+		})
+	}
+}
