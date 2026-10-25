@@ -3,7 +3,8 @@ GOCMD=go
 GOBUILD=$(GOCMD) build -trimpath -buildvcs=false
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
-GOFMT=gofmt -s -w
+GOLANGCI_LINT_VERSION ?= 2.15.0
+GOVULNCHECK_VERSION ?= 1.9.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS = -ldflags="-s -w -X main.Version=$(VERSION)"
@@ -33,9 +34,23 @@ clean:
 	rm -f bin/*
 
 fmt:
-	$(GOFMT) .
+	gofmt -s -w .
 
 lint:
+	@out=$$(golangci-lint version 2>&1); \
+	want=$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod); \
+	got=$$(printf '%s\n' "$$out" | sed -n 's/.* built with go\([0-9.]*\).*/\1/p'); \
+	if ! printf '%s\n' "$$out" | grep -q "version $(GOLANGCI_LINT_VERSION) " || [ -z "$$got" ] || ! printf '%s\n%s\n' "$$want" "$$got" | sort -V -C; then \
+		echo "golangci-lint $(GOLANGCI_LINT_VERSION) built with go >= $$want required; found: $$out"; \
+		echo "install: GOTOOLCHAIN=go$$want go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION)"; \
+		exit 1; \
+	fi
+	@if ! govulncheck -version 2>&1 | grep -q "@v$(GOVULNCHECK_VERSION)"; then \
+		echo "govulncheck $(GOVULNCHECK_VERSION) required"; \
+		echo "install: GOTOOLCHAIN=go$$(sed -n 's/^go \([0-9.]*\)$$/\1/p' go.mod) go install golang.org/x/vuln/cmd/govulncheck@v$(GOVULNCHECK_VERSION)"; \
+		exit 1; \
+	fi
+	@echo "lint tools OK: golangci-lint $(GOLANGCI_LINT_VERSION), govulncheck $(GOVULNCHECK_VERSION)"
 	golangci-lint run ./...
 	govulncheck ./...
 
