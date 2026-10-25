@@ -1,9 +1,8 @@
 name: Build and publish a Docker image to ghcr.io
 
 on:
-  # publish on releases, e.g. v2.3.0 (image tagged as "2.3.0" - "v" prefix is removed)
-  release:
-    types: [ published ]
+  # called by release.yml for v* tags (image tagged as "2.3.0" - "v" prefix is removed)
+  workflow_call:
 
   # publish on pushes to the main/master branch (image tagged as "latest")
   push:
@@ -27,26 +26,31 @@ jobs:
     runs-on: ubuntu-24.04
 
     permissions:
-      contents: write
+      contents: read
       packages: write
       security-events: write
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a v* tag, type=semver yields {{version}}, {{major}}.{{minor}} and {{major}}, and
+      # (flavor latest=auto) also "latest" for non-prerelease tags, the same tag set as a
+      # release event; the raw latest rule is only true on the default branch.
       - name: Extract metadata (tags, labels)
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -57,9 +61,47 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # Build amd64 only and load it locally so it can be scanned before anything is
+      # pushed. The arm64 image is built from the same Dockerfile and Wolfi package set;
+      # scanning amd64 gates both.
+      - name: Build Docker image for scanning
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: zipreport-server:scan
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          no-cache: ${{ inputs.no_cache || false }}
+          cache-from: type=gha
+          platforms: linux/amd64
+
+      - name: Scan Docker image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_IGNORE_UNFIXED: 'true'
+        with:
+          image-ref: zipreport-server:scan
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '1'
+          severity: CRITICAL
+          limit-severities-for-sarif: true
+          vuln-type: os
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+
+      # Runs only if the scan passed. On a no-cache run amd64 is reused from the scan
+      # build's builder-local layers (the scanned bytes); arm64 builds fresh.
       - name: Build and push Docker image
         id: docker_build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: true
@@ -67,44 +109,28 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-          no-cache: ${{ inputs.no_cache || false }}
-          cache-from: type=gha
+          no-cache: false
+          cache-from: ${{ !inputs.no_cache && 'type=gha' || '' }}
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: true
 
-      - name: Scan Docker image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        env:
-          TRIVY_IGNORE_UNFIXED: 'true'
-        with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
-          format: sarif
-          output: trivy-results.sarif
-          exit-code: '1'
-          severity: CRITICAL
-          vuln-type: os
-
-      - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-
       - name: Generate SBOM (CycloneDX) from Docker image
-        uses: anchore/sbom-action@v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: cyclonedx-json
           output-file: bom-cyclonedx.json
+          upload-release-assets: false
 
       - name: Generate SBOM (SPDX) from Docker image
-        uses: anchore/sbom-action@v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: spdx-json
           output-file: bom-spdx.json
+          upload-release-assets: false
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v7
@@ -114,11 +140,3 @@ jobs:
             bom-cyclonedx.json
             bom-spdx.json
           retention-days: 90
-
-      - name: Attach SBOM to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            bom-cyclonedx.json
-            bom-spdx.json

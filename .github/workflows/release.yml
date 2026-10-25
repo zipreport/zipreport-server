@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -37,17 +39,56 @@ jobs:
       - name: Build
         run: make build
 
+  docker:
+    name: Docker image
+    needs: validate
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
   release:
     name: Publish Release
     runs-on: ubuntu-24.04
-    needs: validate
+    needs: docker
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           generate_release_notes: true
+
+  attach_image_sbom:
+    name: Attach image SBOMs
+    runs-on: ubuntu-24.04
+    needs: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download image SBOMs
+        uses: actions/download-artifact@v8
+        with:
+          name: sbom-docker-${{ github.sha }}
+
+      - name: Attach image SBOMs to release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: |
+            bom-cyclonedx.json
+            bom-spdx.json
+
+  sbom:
+    name: SBOMs
+    needs: release
+    uses: ./.github/workflows/sbom.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write
