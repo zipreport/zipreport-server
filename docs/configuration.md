@@ -38,7 +38,7 @@ Configuration for the HTTP API server that handles rendering requests.
 | `authTokenHeader`                | string  | `"X-Auth-Key"`            | HTTP header that carries the authentication token.                                             |
 | `authTokenSecret`                | string  | `""` | Required, at least 32 characters, no leading/trailing whitespace. The server refuses to start if it is empty, too short, or a placeholder from these docs. `ZIPREPORT_API_KEY` overrides it. Generate with `openssl rand -hex 32`. |
 | `defaultSecurityHeaders`         | boolean | `true`                    | Enable default security headers in HTTP responses.                                             |
-| `trustedProxies`                 | array   | `[]`                      | List of trusted proxy IP addresses or CIDR ranges for X-Forwarded-For header processing.       |
+| `trustedProxies`                 | array   | `[]`                      | Trusted proxy IP addresses or CIDR ranges. With the default `[]` no proxy is trusted: `X-Forwarded-For` and `X-Real-IP` are ignored and the logged `client_ip` is the socket peer. Set it when running behind a reverse proxy whose client IPs you want logged. |
 | `tlsEnable`                      | boolean | `false`                   | Enable TLS/HTTPS for the API server.                                                           |
 | `tlsCert`                        | string  | `""`                      | Path to TLS certificate file (PEM format).                                                     |
 | `tlsKey`                         | string  | `""`                      | Path to TLS private key file (PEM format).                                                     |

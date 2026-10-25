@@ -50,6 +50,12 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	if err != nil {
 		return nil, err
 	}
+	// gin trusts every proxy when none is configured, so forwarded headers could forge the client IP
+	if len(cfg.TrustedProxies) == 0 {
+		if err := srv.Router.SetTrustedProxies(nil); err != nil {
+			return nil, err
+		}
+	}
 	srv.Server.ReadHeaderTimeout = ReadHeaderTimeout
 	srv.Server.IdleTimeout = IdleTimeout
 

@@ -3,6 +3,8 @@ package test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"zipreport-server/internal/apiserver"
 	"zipreport-server/pkg/render"
 
+	"github.com/gin-gonic/gin"
 	"github.com/oddbit-project/blueprint/config/provider"
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
@@ -273,4 +276,33 @@ func TestConfig_PortRanges(t *testing.T) {
 		cfg.Prometheus.Port = 22003
 		assert.NoError(t, cfg.Validate())
 	})
+}
+
+func TestNewApiServer_ForwardedHeadersNeedTrustedProxies(t *testing.T) {
+	clientIP := func(t *testing.T, trusted []string, header, value string) string {
+		cfg := &apiserver.ApiServerConfig{
+			ServerConfig:    *httpserver.NewServerConfig(),
+			AuthTokenHeader: "X-Auth-Key",
+			AuthTokenSecret: testAuthToken,
+		}
+		cfg.Host = "localhost"
+		cfg.Port = 0
+		cfg.TrustedProxies = trusted
+		srv, err := apiserver.NewApiServer(cfg, nil, sharedMetrics, log.New("test"))
+		require.NoError(t, err)
+		srv.Router.GET("/ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+
+		req := httptest.NewRequest(http.MethodGet, "/ip", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		req.Header.Set("X-Auth-Key", testAuthToken)
+		req.Header.Set(header, value)
+		w := httptest.NewRecorder()
+		srv.Router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		return w.Body.String()
+	}
+
+	assert.Equal(t, "192.0.2.1", clientIP(t, nil, "X-Forwarded-For", "203.0.113.9"))
+	assert.Equal(t, "192.0.2.1", clientIP(t, nil, "X-Real-IP", "203.0.113.9"))
+	assert.Equal(t, "203.0.113.9", clientIP(t, []string{"192.0.2.0/24"}, "X-Forwarded-For", "203.0.113.9"))
 }
