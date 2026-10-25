@@ -298,5 +298,5 @@ func TestRenderEndpoint_OversizedUploadRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code, "body over MaxUploadBytes must be rejected")
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code, "body over MaxUploadBytes must be rejected")
 }

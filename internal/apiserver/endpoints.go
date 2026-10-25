@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"errors"
 	"net/http"
 	"time"
 	"zipreport-server/pkg/monitor"
@@ -31,6 +32,12 @@ func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics, writeTim
 	m.TotalOps.Inc() // update metrics
 	job, closer, err := buildRenderJob(g, reqId)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			logger.Warn("request body too large", log.KV{"reqId": reqId, "limit": tooLarge.Limit})
+			errTooLarge(g)
+			return
+		}
 		logger.Error(err, "error building render job", log.KV{"reqId": reqId})
 		errBadRequest(g, "error building render job")
 		return
