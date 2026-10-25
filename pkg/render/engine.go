@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/log"
@@ -50,15 +51,17 @@ type Engine struct {
 	metrics        *monitor.Metrics
 	logger         *log.Logger
 	consoleLogging bool
-	launcherURL    string          // Shared launcher URL for no-sandbox mode
-	launcherMx     sync.Mutex      // Guards launcherURL during relaunch
-	ctx            context.Context // Application-level context for pooled browsers
-	browserBin     string          // resolved once in NewEngine; never downloaded on the request path
+	launcherURL    string             // Shared launcher URL for no-sandbox mode
+	launcherMx     sync.Mutex         // Guards launcherURL and sharedLauncher during relaunch
+	sharedLauncher *launcher.Launcher // process behind launcherURL in no-sandbox mode
+	ctx            context.Context    // Application-level context for pooled browsers
+	browserBin     string             // resolved once in NewEngine; never downloaded on the request path
 	concurrency    int
 	egressPolicy   egress.Policy
 	egressLookup   egress.LookupFunc
 	contextProxy   func(proxyAddr string) string
 	conns          sync.Map // *rod.Browser -> context.CancelFunc; the cancel closes that browser's CDP connection
+	dedicated      sync.Map // *rod.Browser -> *launcher.Launcher; the process behind each dedicated-mode browser
 }
 
 func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Metrics, logger *log.Logger) *Engine {
@@ -73,20 +76,23 @@ func NewEngine(ctx context.Context, concurrency int, basePort int, m *monitor.Me
 
 	// Check if we need to create a shared launcher with --no-sandbox
 	var launcherURL string
+	var sharedLauncher *launcher.Launcher
 	if needsNoSandbox() {
 		logger.Info("Detected CI/Docker environment, launching Chrome with --no-sandbox")
-		launcherURL = NewLauncher(bin).MustLaunch()
+		sharedLauncher = NewLauncher(bin)
+		launcherURL = sharedLauncher.MustLaunch()
 	}
 
 	return &Engine{
-		ServerPool:  zpt.NewServerPoolWithContext(ctx, concurrency, basePort, m, logger),
-		BrowserPool: rod.NewBrowserPool(concurrency),
-		metrics:     m,
-		logger:      logger,
-		launcherURL: launcherURL,
-		ctx:         ctx,
-		browserBin:  bin,
-		concurrency: concurrency,
+		ServerPool:     zpt.NewServerPoolWithContext(ctx, concurrency, basePort, m, logger),
+		BrowserPool:    rod.NewBrowserPool(concurrency),
+		metrics:        m,
+		logger:         logger,
+		launcherURL:    launcherURL,
+		sharedLauncher: sharedLauncher,
+		ctx:            ctx,
+		browserBin:     bin,
+		concurrency:    concurrency,
 	}
 }
 
@@ -260,7 +266,12 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		// concurrent jobs. Drop the connection instead. In dedicated mode each
 		// browser is its own process, so close it to release resources.
 		if e.launcherURL == "" {
-			_ = browser.Close()
+			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = browser.Context(cctx).Close()
+			ccancel()
+			if v, ok := e.dedicated.LoadAndDelete(browser); ok {
+				go cleanupLauncher(v.(*launcher.Launcher), 5*time.Second)
+			}
 		}
 		// closing the CDP connection detaches it, so Chrome disposes the DisposeOnDetach contexts
 		e.dropConn(browser)
@@ -551,13 +562,18 @@ func (e *Engine) connectBrowser() (*rod.Browser, error) {
 		l := NewLauncher(e.browserBin).Context(e.ctx)
 		u, err := l.Launch()
 		if err != nil {
+			removeProfile(l)
 			return nil, err
 		}
 		b, err := e.connectChecked(u)
 		if err != nil {
-			l.Kill()
+			go func() {
+				l.Kill()
+				l.Cleanup()
+			}()
 			return nil, err
 		}
+		e.dedicated.Store(b, l)
 		e.metrics.Browsers.Inc()
 		return b, nil
 	}
@@ -594,8 +610,8 @@ var errProcessProxy = errors.New("browser runs with a process-wide proxy setting
 // process-wide proxy: that could carry traffic the per-job egress proxy never sees.
 // The connection is dropped on failure without closing the (possibly shared) browser.
 func (e *Engine) connectChecked(url string) (*rod.Browser, error) {
+	// the child context is already cancelled together with e.ctx
 	ctx, cancel := context.WithCancel(e.ctx)
-	context.AfterFunc(e.ctx, cancel)
 	b := rod.New().ControlURL(url).Context(ctx)
 	if err := b.Connect(); err != nil {
 		cancel()
@@ -639,12 +655,19 @@ func (e *Engine) relaunchSharedBrowser(prevURL string) (string, error) {
 	if e.launcherURL != prevURL {
 		return e.launcherURL, nil
 	}
-	url, err := NewLauncher(e.browserBin).Launch()
+	l := NewLauncher(e.browserBin)
+	url, err := l.Launch()
 	if err != nil {
+		removeProfile(l)
 		e.logger.Error(err, "failed to relaunch shared browser")
 		return "", err
 	}
 	e.logger.Warn("relaunched shared browser instance")
+	// the previous process is not killed (it may still serve other jobs); its profile goes once it exits
+	if prev := e.sharedLauncher; prev != nil {
+		go prev.Cleanup()
+	}
+	e.sharedLauncher = l
 	e.launcherURL = url
 	return url, nil
 }
@@ -673,5 +696,61 @@ func (e *Engine) Shutdown() {
 		// subsequent calls fail; use non-panicking Close to handle this.
 		_ = p.Context(blueprint.ShutdownContext()).Close()
 	})
+	e.cleanupLaunchers()
 	e.ServerPool.Shutdown()
+}
+
+// cleanupLaunchers removes the profiles of every launched browser still known (jobs in flight are not
+// visited by the pool cleanup), waiting at most 5s.
+func (e *Engine) cleanupLaunchers() {
+	var ls []*launcher.Launcher
+	e.launcherMx.Lock()
+	if e.sharedLauncher != nil {
+		ls = append(ls, e.sharedLauncher)
+		e.sharedLauncher = nil
+	}
+	e.launcherMx.Unlock()
+	e.dedicated.Range(func(k, v any) bool {
+		ls = append(ls, v.(*launcher.Launcher))
+		e.dedicated.Delete(k)
+		return true
+	})
+	var wg sync.WaitGroup
+	for _, l := range ls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cleanupLauncher(l, 3*time.Second)
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+// cleanupLauncher removes l's profile once its browser exits. If the process is still running after
+// grace it is killed; Kill is never called once Cleanup has returned (the PID could be reused).
+func cleanupLauncher(l *launcher.Launcher, grace time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		l.Cleanup()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(grace):
+	}
+	l.Kill()
+	<-done
+}
+
+// removeProfile deletes the profile of a launcher whose Launch failed; Cleanup would block forever
+// if the process never started.
+func removeProfile(l *launcher.Launcher) {
+	dir := l.Get(flags.UserDataDir)
+	go func() { _ = os.RemoveAll(dir) }()
 }
