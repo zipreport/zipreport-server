@@ -34,7 +34,7 @@ func TestStartup_ExitsWhenListenerFails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			held, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
-			defer held.Close()
+			defer func() { _ = held.Close() }()
 			heldPort := held.Addr().(*net.TCPAddr).Port
 
 			secret := make([]byte, 20)

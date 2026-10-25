@@ -289,7 +289,7 @@ func (p *Proxy) vet(ctx context.Context, host, port string) ([]string, error) {
 
 	if !p.policy.allowsHostPort(hostPortKey(host, port)) {
 		for _, a := range addrs {
-			if !p.policy.allowsPrefix(a) && !(IsPublicAddr(a) && !p.isLocal(a)) {
+			if !p.policy.allowsPrefix(a) && (!IsPublicAddr(a) || p.isLocal(a)) {
 				return nil, errRefused
 			}
 		}
@@ -479,7 +479,7 @@ func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
 	}
 	// bytes the client sent right behind CONNECT are already in the server's buffer
 	if n := brw.Reader.Buffered(); n > 0 {
-		b, _ := brw.Reader.Peek(n)
+		b, _ := brw.Peek(n)
 		if _, err := up.Write(b); err != nil {
 			return
 		}
