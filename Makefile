@@ -1,6 +1,6 @@
 # Go parameters
 GOCMD=go
-GOBUILD=$(GOCMD) build
+GOBUILD=$(GOCMD) build -trimpath -buildvcs=false
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOFMT=$(GOCMD) fmt
