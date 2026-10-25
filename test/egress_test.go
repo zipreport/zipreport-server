@@ -109,6 +109,7 @@ type proxyOpts struct {
 	dial      egress.DialFunc
 	ifaces    []net.Addr
 	ownDial   string
+	idle      time.Duration
 }
 
 func ipnet(t *testing.T, cidr string) net.Addr {
@@ -166,6 +167,9 @@ func startProxy(t *testing.T, o proxyOpts) *proxyEnv {
 		ifaces = []net.Addr{ipnet(t, "192.0.2.1/24")}
 	}
 	p.InterfaceAddrs = func() ([]net.Addr, error) { return ifaces, nil }
+	if o.idle > 0 {
+		p.TunnelIdle = o.idle
+	}
 	addr, err := p.Start()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })

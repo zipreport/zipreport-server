@@ -46,6 +46,7 @@ type Proxy struct {
 	Lookup         LookupFunc         // default net.DefaultResolver.LookupNetIP; test seam
 	Dial           DialFunc           // default net.Dialer with a 10s timeout; test seam
 	InterfaceAddrs InterfaceAddrsFunc // default net.InterfaceAddrs; test seam
+	TunnelIdle     time.Duration      // default 60s; CONNECT tunnel idle limit; test seam
 
 	ownHost   string
 	ownDial   string
@@ -84,6 +85,7 @@ func New(ownHost, ownDial string, poolFirst, poolCount int, policy Policy) *Prox
 
 		RetireInterval: 10 * time.Second,
 		RetireAttempts: 6,
+		TunnelIdle:     tunnelIdle,
 	}
 }
 
@@ -487,23 +489,23 @@ func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); copyIdle(up, client) }()
-	go func() { defer wg.Done(); copyIdle(client, up) }()
+	go func() { defer wg.Done(); copyIdle(up, client, p.TunnelIdle) }()
+	go func() { defer wg.Done(); copyIdle(client, up, p.TunnelIdle) }()
 	wg.Wait()
 }
 
-// copyIdle copies src to dst until either side ends or src is idle for tunnelIdle, then closes both.
-func copyIdle(dst, src net.Conn) {
+// copyIdle copies src to dst until either side ends or src is idle for idle, then closes both.
+func copyIdle(dst, src net.Conn, idle time.Duration) {
 	defer func() {
 		_ = dst.Close()
 		_ = src.Close()
 	}()
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(tunnelIdle))
+		_ = src.SetReadDeadline(time.Now().Add(idle))
 		n, err := src.Read(buf)
 		if n > 0 {
-			_ = dst.SetWriteDeadline(time.Now().Add(tunnelIdle))
+			_ = dst.SetWriteDeadline(time.Now().Add(idle))
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
 			}
