@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"zipreport-server/pkg/browser"
 
@@ -114,5 +115,5 @@ func TestExtractZip_RejectsUnsafeSymlinks(t *testing.T) {
 
 func isUnder(p, dir string) bool {
 	rel, err := filepath.Rel(dir, p)
-	return err == nil && rel != ".." && !(len(rel) > 2 && rel[:3] == ".."+string(os.PathSeparator))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
