@@ -201,3 +201,31 @@ func TestConfigureEngine_AppliesZipReportSettings(t *testing.T) {
 	cfg.ZipReport.EgressAllow = []string{"not a rule"}
 	assert.Error(t, internal.ConfigureEngine(engine, cfg))
 }
+
+func TestPrometheusConfig_ValidateEndpointAndPort(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		port     int
+		ok       bool
+	}{
+		{"default", "/metrics", 2220, true},
+		{"empty_endpoint", "", 2220, false},
+		{"relative_endpoint", "metrics", 2220, false},
+		{"bad_wildcard_endpoint", "/metrics{", 2220, false},
+		{"port_too_high", "/metrics", 70000, false},
+		{"port_max", "/metrics", 65535, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := internal.NewConfig().Prometheus
+			cfg.Endpoint = tc.endpoint
+			cfg.Port = tc.port
+			if tc.ok {
+				assert.NoError(t, cfg.Validate())
+			} else {
+				assert.Error(t, cfg.Validate())
+			}
+		})
+	}
+}

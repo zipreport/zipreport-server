@@ -60,8 +60,8 @@ Configuration for the Prometheus metrics endpoint.
 | Field                  | Type    | Default       | Description                                                                         |
 |------------------------|---------|---------------|-------------------------------------------------------------------------------------|
 | `host`                 | string  | `"localhost"` | Address to bind the metrics server to. Keep `localhost` on bare metal. In containers set `0.0.0.0` (see below). |
-| `port`                 | integer | `2220`        | Port number for the Prometheus metrics endpoint.                                    |
-| `endpoint`             | string  | `"/metrics"`  | HTTP path for the metrics endpoint.                                                 |
+| `port`                 | integer | `2220`        | Port number for the Prometheus metrics endpoint (1024-65535).                       |
+| `endpoint`             | string  | `"/metrics"`  | HTTP path for the metrics endpoint. Must be a valid Go `ServeMux` pattern (normally starting with `/`); an empty or invalid value is refused at startup. |
 | `tlsEnable`            | boolean | `false`       | Enable TLS/HTTPS for the metrics endpoint.                                          |
 | `tlsCert`              | string  | `""`          | Path to TLS certificate file (PEM format).                                          |
 | `tlsKey`               | string  | `""`          | Path to TLS private key file (PEM format).                                          |

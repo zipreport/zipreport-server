@@ -60,9 +60,26 @@ func (c *PrometheusConfig) Validate() error {
 	if c.Host == "" {
 		return errors.New("prometheus host is required")
 	}
-	if c.Port < 1024 {
-		return errors.New("prometheus port is less than 1024")
+	if c.Port < 1024 || c.Port > 65535 {
+		return errors.New("prometheus port must be between 1024 and 65535")
 	}
+	if c.Endpoint == "" {
+		return errors.New("prometheus endpoint is required")
+	}
+	if err := checkEndpoint(c.Endpoint); err != nil {
+		return fmt.Errorf("invalid prometheus endpoint %q: %v", c.Endpoint, err)
+	}
+	return nil
+}
+
+// checkEndpoint registers the endpoint the way NewServer will; ServeMux panics on an invalid pattern
+func checkEndpoint(endpoint string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	http.NewServeMux().Handle(endpoint, http.NotFoundHandler())
 	return nil
 }
 
