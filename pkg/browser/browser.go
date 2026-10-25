@@ -280,6 +280,9 @@ func extractZip(zipPath, destDir string) error {
 	// Determine common prefix to strip (zip archives often have a top-level dir)
 	prefix := findCommonPrefix(r.File)
 
+	type link struct{ target, linkname string }
+	var links []link
+
 	for _, f := range r.File {
 		name := strings.TrimPrefix(f.Name, prefix)
 		if name == "" {
@@ -290,6 +293,21 @@ func extractZip(zipPath, destDir string) error {
 
 		// Prevent zip slip
 		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			continue
+		}
+
+		if f.Mode()&os.ModeSymlink != 0 {
+			linkname, err := readSymlinkTarget(f)
+			if err != nil {
+				return err
+			}
+			// Skip links that are absolute or climb out with ".." (silently, like the zip-slip case):
+			// without ".." a relative link can only point deeper into the tree, chains included.
+			// ".." is looked for before cleaning: Clean would fold "a/L/../x" into "a/x" and hide it.
+			if linkname == "" || filepath.IsAbs(filepath.FromSlash(linkname)) || strings.HasPrefix(linkname, "/") || hasDotDot(linkname) {
+				continue
+			}
+			links = append(links, link{target: target, linkname: linkname})
 			continue
 		}
 
@@ -309,7 +327,42 @@ func extractZip(zipPath, destDir string) error {
 		}
 	}
 
+	// Links go in last, so no regular entry is ever written through one.
+	for _, l := range links {
+		if err := os.MkdirAll(filepath.Dir(l.target), 0755); err != nil {
+			return err
+		}
+		if err := os.Symlink(filepath.FromSlash(l.linkname), l.target); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func readSymlinkTarget(f *zip.File) (string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rc.Close() }()
+	b, err := io.ReadAll(io.LimitReader(rc, 4096+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > 4096 {
+		return "", nil
+	}
+	return string(b), nil
+}
+
+func hasDotDot(p string) bool {
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func extractFile(f *zip.File, target string) error {
