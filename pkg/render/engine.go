@@ -41,6 +41,9 @@ var ErrJobCancelled = errors.New("render job cancelled")
 const DefaultConcurrency = 8
 const DefaultBasePort = 22000
 
+// maxConsoleMessages caps console/log entries logged per job when console logging is on.
+const maxConsoleMessages = 200
+
 type Engine struct {
 	ServerPool     *zpt.ServerPool
 	BrowserPool    rod.Pool[rod.Browser]
@@ -324,9 +327,13 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	// WaitGroup to synchronize event goroutines with page closure
 	var evtWg sync.WaitGroup
 	defer func() {
-		pageCancel()                    // cancel page context, immediately unblocking event goroutines
-		evtWg.Wait()                    // wait for event goroutines to finish
-		_ = page.Context(e.ctx).Close() // close tab using a live context
+		pageCancel() // cancel page context, immediately unblocking event goroutines
+		evtWg.Wait() // wait for event goroutines to finish
+		closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(e.ctx), 5*time.Second)
+		defer closeCancel()
+		// bounded: a beforeunload handler on a busy renderer never lets Page.close finish;
+		// disposing the browser context afterwards tears the tab down regardless
+		_ = page.Context(closeCtx).Close()
 	}()
 
 	if job.IgnoreSSLErrors {
@@ -334,6 +341,16 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		if err := (proto.SecuritySetIgnoreCertificateErrors{Ignore: true}).Call(page); err != nil {
 			e.logger.Error(err, "failed to set cert error policy", log.KV{"id": jobId})
 			return &JobResult{ElapsedTime: time.Since(start).Seconds(), Success: false, Output: nil, Error: err}
+		}
+	}
+
+	var consoleCount atomic.Int32
+	logConsole := func(f func()) {
+		n := consoleCount.Add(1)
+		if n <= maxConsoleMessages {
+			f()
+		} else if n == maxConsoleMessages+1 {
+			e.logger.Warn("console output truncated", log.KV{"id": jobId, "limit": maxConsoleMessages})
 		}
 	}
 
@@ -350,22 +367,22 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		waitEvents := page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
 			if e.consoleLogging {
 				// log JS console output
-				e.logConsoleArgs(page, evt.Args, jobId)
+				logConsole(func() { e.logConsoleArgs(evt.Args, jobId) })
 			}
 
-			if len(evt.Args) > 0 {
-				if val, err := page.ObjectToJSON(evt.Args[0]); err == nil && val.String() == "zpt-view-ready" {
-					e.logger.Debug("console message received", log.KV{"id": jobId})
-					if closed.CompareAndSwap(0, 1) {
-						close(done)
-					}
+			if len(evt.Args) > 0 && evt.Args[0].Value.String() == "zpt-view-ready" {
+				e.logger.Debug("console message received", log.KV{"id": jobId})
+				if closed.CompareAndSwap(0, 1) {
+					close(done)
 				}
 			}
 		},
 			func(evt *proto.LogEntryAdded) {
 				if e.consoleLogging && evt.Entry != nil {
-					msg, _ := json.Marshal(evt.Entry)
-					e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
+					logConsole(func() {
+						msg, _ := json.Marshal(evt.Entry)
+						e.logger.Info("console message received", log.KV{"id": jobId, "src": "logger", "message": string(msg)})
+					})
 				}
 			})
 		evtWg.Add(1)
@@ -381,6 +398,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		defer cancel.Stop()
 
 		waitLoadEvt := page.WaitEvent(&proto.PageLoadEventFired{})
+		loadFired := make(chan struct{})
+		evtWg.Add(1)
+		go func() { defer evtWg.Done(); waitLoadEvt(); close(loadFired) }()
 		err = page.Navigate(url)
 		if err != nil {
 			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
@@ -401,7 +421,10 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 				Error:       err,
 			}
 		}
-		waitLoadEvt()
+		select {
+		case <-loadFired:
+		case <-pageCtx.Done():
+		}
 		select {
 		case <-done:
 			break
@@ -418,12 +441,14 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		if e.consoleLogging {
 			// log console & browser logger
 			waitEvents := page.EachEvent(func(evt *proto.RuntimeConsoleAPICalled) {
-				e.logConsoleArgs(page, evt.Args, jobId)
+				logConsole(func() { e.logConsoleArgs(evt.Args, jobId) })
 			},
 				func(evt *proto.LogEntryAdded) {
 					if evt.Entry != nil {
-						msg, _ := json.Marshal(evt.Entry)
-						e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
+						logConsole(func() {
+							msg, _ := json.Marshal(evt.Entry)
+							e.logger.Info(string(msg), log.KV{"id": jobId, "src": "logger"})
+						})
 					}
 				})
 			evtWg.Add(1)
@@ -500,11 +525,13 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	return result
 }
 
-func (e *Engine) logConsoleArgs(page *rod.Page, args []*proto.RuntimeRemoteObject, jobId string) {
+func (e *Engine) logConsoleArgs(args []*proto.RuntimeRemoteObject, jobId string) {
 	var parts []string
 	for _, obj := range args {
-		if val, err := page.ObjectToJSON(obj); err == nil {
-			parts = append(parts, val.String())
+		if obj.ObjectID == "" {
+			parts = append(parts, obj.Value.String())
+		} else {
+			parts = append(parts, obj.Description)
 		}
 	}
 	if len(parts) > 0 {
