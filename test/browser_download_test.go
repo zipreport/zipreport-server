@@ -14,9 +14,10 @@ import (
 func TestCopyLimited(t *testing.T) {
 	t.Run("over the limit", func(t *testing.T) {
 		var dst bytes.Buffer
-		_, err := browser.CopyLimited(&dst, io.NopCloser(bytes.NewReader(make([]byte, 101))), 100, time.Second)
+		_, err := browser.CopyLimited(&dst, io.NopCloser(bytes.NewReader(make([]byte, 1000))), 100, time.Second)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "exceeds")
+		assert.LessOrEqual(t, dst.Len(), 101, "must stop reading past the limit")
 	})
 
 	t.Run("exactly the limit", func(t *testing.T) {
