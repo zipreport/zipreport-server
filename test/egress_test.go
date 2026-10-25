@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -388,6 +389,54 @@ func TestEgressProxy_ConnectDialsVettedIP(t *testing.T) {
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
 	require.NoError(t, err)
 	assert.Equal(t, 204, resp.StatusCode)
+}
+
+func TestEgressProxy_ConnectStreamingTunnelNotIdle(t *testing.T) {
+	dial := func(_ context.Context, _, _ string) (net.Conn, error) {
+		client, upstream := net.Pipe()
+		go func() {
+			defer func() { _ = upstream.Close() }()
+			for i := 0; i < 10; i++ {
+				time.Sleep(300 * time.Millisecond)
+				if _, err := upstream.Write([]byte("x")); err != nil {
+					return
+				}
+			}
+		}()
+		return client, nil
+	}
+	env := startProxy(t, proxyOpts{
+		idle:   time.Second,
+		lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+		dial:   dial,
+	})
+	c, br, code := rawConnect(t, env.addr, "pub.test:443", "")
+	require.Equal(t, 200, code)
+	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
+	got, err := io.ReadAll(br)
+	require.NoError(t, err)
+	assert.Equal(t, 10, len(got), "an active download must not be cut as idle")
+}
+
+func TestEgressProxy_ConnectIdleTunnelCloses(t *testing.T) {
+	dial := func(_ context.Context, _, _ string) (net.Conn, error) {
+		client, upstream := net.Pipe()
+		t.Cleanup(func() { _ = upstream.Close() })
+		return client, nil
+	}
+	env := startProxy(t, proxyOpts{
+		idle:   time.Second,
+		lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+		dial:   dial,
+	})
+	c, br, code := rawConnect(t, env.addr, "pub.test:443", "")
+	require.Equal(t, 200, code)
+	start := time.Now()
+	_ = c.SetDeadline(time.Now().Add(2500 * time.Millisecond))
+	_, err := br.ReadByte()
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, os.ErrDeadlineExceeded), "tunnel must be closed by the proxy, not by the client deadline")
+	assert.Less(t, time.Since(start), 2500*time.Millisecond)
 }
 
 func TestEgressProxy_HardDenyOverridesAllow(t *testing.T) {
