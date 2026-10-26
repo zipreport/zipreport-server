@@ -2,7 +2,10 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"time"
 
 	"zipreport-server/internal/apiserver"
@@ -83,6 +86,17 @@ func (z *ZipReport) Build(appName string) {
 	}
 	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
 	z.AbortFatal(ConfigureEngine(zptEngine, cfg))
+	if up := zptEngine.EgressPolicy().Upstream; up != nil {
+		resolve := "local"
+		if up.ByName {
+			resolve = "upstream"
+		}
+		// never log up.URL: it may carry userinfo
+		z.logger.Info("egress upstream proxy enabled", log.KV{"upstream": up.Endpoint(), "resolve": resolve})
+		if up.ByName {
+			z.checkByNameUpstream(up)
+		}
+	}
 	if cfg.ZipReport.EnableHttpDebugging && HttpDebugSuppressedAt(cfg.Logging.Level) {
 		z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
 	}
@@ -143,6 +157,33 @@ func (z *ZipReport) Start() {
 	)
 }
 
+// checkByNameUpstream refuses resolve "upstream" with an upstream on this host and warns about its trade-off.
+func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip", up.Hostname())
+	ifaces, ierr := net.InterfaceAddrs()
+	if lerr != nil || ierr != nil {
+		z.logger.Warn("cannot resolve the upstream proxy at startup; each job will check it")
+		return
+	}
+	var local []netip.Addr
+	for _, a := range ifaces {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if na, ok := netip.AddrFromSlice(ipn.IP); ok {
+				local = append(local, na)
+			}
+		}
+	}
+	for _, a := range addrs {
+		if egress.OnThisHost(a, local) {
+			z.AbortFatal(errors.New("zipReport.upstreamProxy: resolve \"upstream\" cannot be used with an upstream proxy on this host"))
+			return
+		}
+	}
+	z.logger.Warn("zipReport.upstreamProxy.resolve is \"upstream\": the upstream proxy decides where host names go, so a rendered page can reach anything the upstream can reach; configure destination ACLs on the upstream and never use this mode with an upstream that shares this server's network namespace")
+}
+
 // ConfigureEngine applies the zipReport settings to the render engine.
 func ConfigureEngine(e *render.Engine, cfg *Config) error {
 	if cfg.ZipReport.EnableConsoleLogging {
@@ -162,6 +203,11 @@ func ConfigureEngine(e *render.Engine, cfg *Config) error {
 		}
 		policy.Allow = append(policy.Allow, rule)
 	}
+	up, err := egress.ParseUpstream(cfg.ZipReport.UpstreamProxy.URL, cfg.ZipReport.UpstreamProxy.Resolve, cfg.ZipReport.UpstreamProxy.NoProxy)
+	if err != nil {
+		return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+	}
+	policy.Upstream = up
 	e.SetEgressPolicy(policy)
 	e.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
 	return nil

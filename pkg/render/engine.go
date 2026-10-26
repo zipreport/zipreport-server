@@ -229,6 +229,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		if n, s := proxy.Blocked(); n > 0 {
 			e.logger.Warn("blocked network requests from rendered page", log.KV{"id": jobId, "count": n, "samples": s})
 		}
+		if n, last := proxy.UpstreamErrors(); n > 0 {
+			e.logger.Warn("upstream proxy failures", log.KV{"id": jobId, "count": n, "last": last})
+		}
 	}()
 
 	browser, err := e.GetBrowser()
