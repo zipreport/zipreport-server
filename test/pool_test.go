@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"testing"
 	"time"
+	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/zpt"
 
 	"github.com/oddbit-project/blueprint/log"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,9 +110,10 @@ func TestZptServer_ShutdownBeforeRunReleasesPort(t *testing.T) {
 
 func TestServerPool_GaugeBalancedAfterShutdown(t *testing.T) {
 	reader, logger := poolTestSetup(t)
-	before := testutil.ToFloat64(sharedMetrics.HttpServers)
+	// unregistered gauge: servers left by other tests decrement sharedMetrics asynchronously
+	metrics := &monitor.Metrics{HttpServers: prometheus.NewGauge(prometheus.GaugeOpts{Name: "current_http_servers"})}
 
-	pool := zpt.NewServerPool(1, 30200, sharedMetrics, logger)
+	pool := zpt.NewServerPool(1, 30200, metrics, logger)
 	srv := buildWithGuard(t, pool, reader)
 	require.NotNil(t, srv)
 	require.Eventually(t, func() bool {
@@ -121,11 +124,11 @@ func TestServerPool_GaugeBalancedAfterShutdown(t *testing.T) {
 		_ = resp.Body.Close()
 		return resp.StatusCode == 200
 	}, 2*time.Second, 50*time.Millisecond)
-	assert.Equal(t, before+1, testutil.ToFloat64(sharedMetrics.HttpServers))
+	assert.Equal(t, float64(1), testutil.ToFloat64(metrics.HttpServers))
 
 	pool.Shutdown()
 	time.Sleep(300 * time.Millisecond)
-	assert.Equal(t, before, testutil.ToFloat64(sharedMetrics.HttpServers))
+	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.HttpServers))
 }
 
 func TestServerPool_UsesConfiguredTimeouts(t *testing.T) {

@@ -47,6 +47,9 @@ cert/
 config/ssl/*.key
 config/ssl/*.crt
 
+# Local config (holds authTokenSecret)
+config/config.json
+
 # Logs
 *.log
 application.log
