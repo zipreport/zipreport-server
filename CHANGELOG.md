@@ -5,6 +5,12 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- New `zipReport.upstreamProxy` (`url`, `resolve`, `noProxy`) chains the per-job egress proxy to an operator's HTTP(S) proxy. Only public destinations use the upstream; by default it receives the vetted IP, never a name. `resolve: "upstream"` hands it host names and moves the security boundary to the upstream, so it needs destination ACLs there (see `docs/configuration.md`)
+- `ZIPREPORT_UPSTREAM_PROXY` overrides `zipReport.upstreamProxy.url` so the proxy password can stay out of the config file
+
 ## [3.0.0]
 
 This release contains breaking changes; see the upgrade notes in `docs/migration-guide.md` ("Upgrading from 2.4.x to 3.0.0"). Entries marked **Breaking:** need action on upgrade.

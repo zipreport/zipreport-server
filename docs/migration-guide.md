@@ -27,9 +27,9 @@ curl -H "X-Auth-Key: $ZIPREPORT_API_KEY" ...
 
 All browser traffic of a render job goes through a built-in per-job egress proxy.
 
-- `HTTP_PROXY` / `HTTPS_PROXY` are **ignored** for rendered content. The egress proxy dials directly; there is no
-  upstream proxy chaining. If your deployment relied on an outbound proxy, external assets (CDN fonts, scripts, images)
-  stop loading.
+- `HTTP_PROXY` / `HTTPS_PROXY` are **ignored** for rendered content. The egress proxy dials directly unless you
+  configure `zipReport.upstreamProxy` (available from the next release). If your deployment relied on an outbound
+  proxy, external assets (CDN fonts, scripts, images) stop loading until you do.
 - A Chrome that runs with a process-wide proxy switch (`--proxy-server`, `--proxy-pac-url`, `--no-proxy-server`) is
   **refused**, and the job fails, because such a browser could carry traffic the egress proxy never sees. Remove the
   switch from any custom launch arguments.

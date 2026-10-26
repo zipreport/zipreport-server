@@ -24,7 +24,7 @@ Version 3.0.0 has breaking changes. The full list, with what to change, is in th
    it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as 3.0.0 is
    released.
 2. **HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored). All of a
-   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend
+   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining; see `zipReport.upstreamProxy` from the next release), so deployments that depend
    on an outbound proxy lose external assets (CDN fonts, scripts, images). Loopback, private and link-local destinations are
    blocked unless allowed with `zipReport.egressAllow`. A Chrome started with `--proxy-server`, `--proxy-pac-url` or
    `--no-proxy-server` is refused.
@@ -116,6 +116,10 @@ ephemeral HTTP servers on localhost as part of the rendering process.
   including other jobs' egress proxies and Chrome's DevTools port. An entry covering Kubernetes Service/pod or Docker
   bridge CIDRs can reach this or other replicas' API and metrics ports through non-local addresses, which the
   hard-deny list does not cover. If the page does not reach its own server through the proxy, the job fails.
+- With `zipReport.upstreamProxy` set, public traffic is chained through the operator's proxy, by vetted IP by
+  default (`resolve: "local"`), so the rules above still hold; destinations admitted only by `egressAllow` stay direct.
+  `resolve: "upstream"` hands the proxy host names instead and moves the security boundary to the upstream proxy: it
+  needs destination ACLs there and must never be used with a proxy sharing this server's network namespace.
 - Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy; they are refused
   and counted in the "blocked network requests" warning logged per job.
 - Residual risks of the egress proxy:
