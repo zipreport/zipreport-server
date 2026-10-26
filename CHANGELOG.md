@@ -33,6 +33,7 @@ This release contains breaking changes; see the upgrade notes in `docs/migration
 - The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch
 - Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
 - Pushing a `v*` tag now publishes the versioned Docker images and the image and source SBOMs (previously only the release was created); a release created in the GitHub UI for an existing tag no longer triggers any build
+- **Breaking:** Docker images are published only from `v*` release tags. Pushes to `master`/`main`, the daily scheduled rebuild and manual dispatch no longer publish, so `latest` is the latest non-prerelease release (not the default branch) and the `master`/`main` branch image tags are no longer updated
 - Releases created in the GitHub UI no longer get duplicate `zipreport-zipreport-server_*` SBOM assets
 - A request body over 128 MiB is now answered with 413 instead of 400
 - `X-Forwarded-For` and `X-Real-IP` are ignored unless `apiServer.trustedProxies` is set; with the default `[]` the logged `client_ip` is the socket peer (previously any client could forge it). Set `trustedProxies` when running behind a reverse proxy whose client IPs you want logged

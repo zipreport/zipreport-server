@@ -1,7 +1,7 @@
 # Upgrading from 2.4.x to 3.0.0
 
 Version 3.0.0 contains breaking changes. Read every item before upgrading; images tagged `latest` pick them up as soon as
-they reach the default branch. `v2.4.1` remains available for deployments that are not ready to move.
+3.0.0 is released. `v2.4.1` remains available for deployments that are not ready to move.
 
 ## 1. The API secret is mandatory
 

@@ -57,7 +57,8 @@ A called workflow can never hold more permissions than the calling job grants.
 
 ### docker.yml - Docker Image Publishing
 
-Builds, scans and publishes Docker images to GitHub Container Registry (ghcr.io). Callable from `release.yml`.
+Builds, scans and publishes Docker images to GitHub Container Registry (ghcr.io). Runs only when called by
+`release.yml` for a `v*` tag; nothing else publishes an image.
 
 **Steps of the `docker_publish` job (in order):**
 
@@ -67,23 +68,20 @@ Builds, scans and publishes Docker images to GitHub Container Registry (ghcr.io)
 3. Uploads the Trivy SARIF results to the GitHub Security tab (does not block publication if the upload itself fails)
 4. Builds and pushes the multi-platform image (`linux/amd64`, `linux/arm64`) with SBOM and provenance attestations.
    This step runs only if the scan passed. The arm64 image comes from the same Dockerfile and package set, so
-   scanning amd64 gates both. On a no-cache run the amd64 layers are reused from the scan build.
+   scanning amd64 gates both.
 5. Generates image-based SBOMs (CycloneDX and SPDX, `bom-cyclonedx.json` and `bom-spdx.json`) from the pushed image
    and uploads them as the `sbom-docker-<commit-sha>` artifact (retained for 90 days)
 
 **Image Tags:**
 
-- `latest` - Latest commit on default branch, and the latest non-prerelease version tag
-- `<branch>` - Latest commit on a specific branch
+- `latest` - The latest non-prerelease version tag
 - `<version>` - Release version (e.g., `2.3.0` from `v2.3.0` tag)
 - `<major>.<minor>` - Latest patch version (e.g., `2.3`)
 - `<major>` - Latest minor version (e.g., `2`)
 
 **Triggers:**
-- Push to `main` or `master` branches (tagged as `latest`)
-- Called by `release.yml` for `v*` tags (tagged with version number)
-- Daily schedule (06:00 UTC), built without cache, to pick up base image and dependency patches
-- Manual trigger via `workflow_dispatch` (optional `no_cache` input)
+- Called by `release.yml` for `v*` tags (tagged with version number); branch pushes, schedules and manual runs do not
+  publish
 
 **Permissions:**
 - `contents: read` - Check out the repository
@@ -142,7 +140,6 @@ The Docker workflow scans the image with [Trivy](https://trivy.dev/) before it i
 - Scans OS packages
 - Fails the build, and publishes nothing, if fixed CRITICAL vulnerabilities are found
 - Results are uploaded to the GitHub Security tab (Code scanning alerts)
-- Daily rebuilds ensure base image patches are picked up automatically
 
 ### Dependency Scanning
 
@@ -237,7 +234,7 @@ If Docker builds fail:
 If the Trivy scan fails the build (nothing is pushed or released):
 1. Check the job log for the specific CVEs
 2. Update the base image or affected packages
-3. Trigger a manual rebuild via `workflow_dispatch` after fixes; for a release, delete the tag and push it again at the fixed commit ("Re-run failed jobs" only helps when the failure was transient)
+3. Delete the tag and push it again at the fixed commit ("Re-run failed jobs" only helps when the failure was transient)
 
 ### Grype Scan Failures
 

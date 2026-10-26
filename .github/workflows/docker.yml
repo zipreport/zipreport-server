@@ -1,25 +1,9 @@
 name: Build and publish a Docker image to ghcr.io
 
 on:
-  # called by release.yml for v* tags (image tagged as "2.3.0" - "v" prefix is removed)
+  # called by release.yml for v* tags (image tagged as "2.3.0" - "v" prefix is removed);
+  # this is the only path that publishes an image
   workflow_call:
-
-  # publish on pushes to the main/master branch (image tagged as "latest")
-  push:
-    branches:
-      - main
-      - master
-
-  # rebuild daily to pick up base image and dependency security patches
-  schedule:
-    - cron: '0 6 * * *'
-
-  workflow_dispatch:
-    inputs:
-      no_cache:
-        description: 'Build without layer cache to pick up fresh base image / package patches'
-        type: boolean
-        default: false
 
 jobs:
   docker_publish:
@@ -46,20 +30,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # On a v* tag, type=semver yields {{version}}, {{major}}.{{minor}} and {{major}}, and
-      # (flavor latest=auto) also "latest" for non-prerelease tags, the same tag set as a
-      # release event; the raw latest rule is only true on the default branch.
+      # (flavor latest=auto) also "latest" for non-prerelease tags.
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       # Build amd64 only and load it locally so it can be scanned before anything is
       # pushed. The arm64 image is built from the same Dockerfile and Wolfi package set;
@@ -73,7 +53,6 @@ jobs:
           tags: zipreport-server:scan
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-          no-cache: ${{ inputs.no_cache || github.event_name == 'schedule' }}
           cache-from: type=gha
           platforms: linux/amd64
 
@@ -97,8 +76,7 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # Runs only if the scan passed. On a no-cache run amd64 is reused from the scan
-      # build's builder-local layers (the scanned bytes); arm64 builds fresh.
+      # Runs only if the scan passed.
       - name: Build and push Docker image
         id: docker_build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -109,8 +87,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-          no-cache: false
-          cache-from: ${{ !(inputs.no_cache || github.event_name == 'schedule') && 'type=gha' || '' }}
+          cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
           sbom: true

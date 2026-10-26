@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/zipreport/zipreport-server)](https://go.dev/)
 [![License](https://img.shields.io/github/license/zipreport/zipreport-server)](https://github.com/zipreport/zipreport-server/blob/development/LICENSE)
 [![CI](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/ci.yml)
-[![Docker](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/docker.yml)
+[![Release](https://github.com/zipreport/zipreport-server/actions/workflows/release.yml/badge.svg)](https://github.com/zipreport/zipreport-server/actions/workflows/release.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/zipreport/zipreport-server)](https://goreportcard.com/report/github.com/zipreport/zipreport-server)
 
 ZipReport-server is the [zipreport](https://github.com/zipreport/zipreport) HTML to PDF conversion daemon, based on
@@ -21,8 +21,8 @@ Version 3.0.0 has breaking changes. The full list, with what to change, is in th
 1. **API secret requirements.** The server refuses to start when `authTokenSecret` (or `ZIPREPORT_API_KEY`) is empty,
    shorter than 32 characters, padded with whitespace, or one of the placeholder values that appeared in earlier sample
    configs and docs. The Docker image no longer contains a usable secret. Generate one with `openssl rand -hex 32` and pass
-   it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as it reaches the
-   default branch.
+   it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as 3.0.0 is
+   released.
 2. **HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored). All of a
    job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend
    on an outbound proxy lose external assets (CDN fonts, scripts, images). Loopback, private and link-local destinations are
