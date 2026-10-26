@@ -80,7 +80,7 @@ The `fixtures/` directory contains:
 
 - Tests use a shared Prometheus metrics instance to avoid duplicate registration errors
 - The render engine requires browser automation (Rod/Chromium), so tests may take several seconds to run
-- Short mode (`-short` flag) skips timeout and concurrency tests
+- Short mode (`-short` flag) skips every test that launches Chrome (renders, timeouts, concurrency, metrics); the remaining tests need no browser
 - Tests automatically clean up resources (browsers, HTTP servers) after completion
 
 ## Authentication
@@ -99,7 +99,7 @@ All API tests use the test authentication token defined in the test setup. The t
 - Set `ROD_DEBUG=1` for Rod debugging
 
 ### Port conflicts
-- Tests use ports 42000+ for temporary HTTP servers
+- Tests use ports 22000-32000 for temporary HTTP servers
 - Ensure these ports are available
 
 ## Future Improvements

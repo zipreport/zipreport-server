@@ -3,11 +3,9 @@
     "host": "",
     "port": 6543,
     "readTimeout": 600,
-    "writeTimeout": 600,
+    "writeTimeout": 720,
     "debug": false,
-    "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "my-super-secret-token",
-    "defaultSecurityHeaders": true,
+    "serverName": "http",
     "trustedProxies": [],
     "tlsCert": "",
     "tlsKey": "",
@@ -19,7 +17,10 @@
     "tlsMinVersion": "",
     "tlsMaxVersion": "",
     "tlsAllowedDNSNames": null,
-    "tlsEnable": false
+    "tlsEnable": false,
+    "authTokenHeader": "X-Auth-Key",
+    "authTokenSecret": "",
+    "defaultSecurityHeaders": true
   },
   "prometheus": {
     "host": "localhost",
@@ -44,7 +45,8 @@
     "enableHttpDebugging": false,
     "enableMetrics": false,
     "concurrency": 8,
-    "baseHttpPort": 42000
+    "baseHttpPort": 22000,
+    "egressAllow": []
   },
   "log": {
     "level": "info",
@@ -52,7 +54,7 @@
     "includeTimestamp": true,
     "includeCaller": false,
     "includeHostname": true,
-    "callerSkipFrames": 2,
+    "callerSkipFrames": 3,
     "timeFormat": "2006-01-02T15:04:05.999999999Z07:00",
     "noColor": false,
     "outputToFile": false,

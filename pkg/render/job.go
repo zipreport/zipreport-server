@@ -1,6 +1,9 @@
 package render
 
 import (
+	"context"
+	"time"
+
 	"zipreport-server/pkg/zpt"
 
 	"github.com/go-rod/rod/lib/proto"
@@ -48,6 +51,17 @@ type Job struct {
 	JsTimeoutS        int
 	UseJSEvent        bool
 	IgnoreSSLErrors   bool
+
+	// Ctx is the caller's context (the HTTP request); cancelling it cancels the job. nil means Background.
+	Ctx context.Context `json:"-"`
+}
+
+// Timeout is the job's deadline; JobTimeoutS <= 0 means JobDefaultTimeout.
+func (j *Job) Timeout() time.Duration {
+	if j.JobTimeoutS <= 0 {
+		return JobDefaultTimeout * time.Second
+	}
+	return time.Duration(j.JobTimeoutS) * time.Second
 }
 
 type JobResult struct {
@@ -55,6 +69,10 @@ type JobResult struct {
 	Success     bool
 	Output      []byte
 	Error       error
+
+	BlockedRequests    int      // requests the egress proxy refused
+	BlockedSamples     []string // distinct refused destinations, bounded
+	EgressSawOwnOrigin bool     // the page reached its own server through the proxy
 }
 
 var ValidPageSizes = []string{PageA3, PageA4, PageA5, PageLetter, PageLegal, PageTabloid}

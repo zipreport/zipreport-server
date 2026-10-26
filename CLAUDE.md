@@ -16,7 +16,7 @@ make test-short         # Run tests that don't require Chrome (fast, CI-safe)
 make test-integration   # Run full test suite including browser-based tests (requires Chrome)
 make test-fixtures      # Regenerate .zpt fixtures from source HTML files
 make fmt                # Format code
-make lint               # Run golangci-lint and govulncheck
+make lint               # Run golangci-lint and govulncheck (requires golangci-lint 2.15.0 built with go >= go.mod, govulncheck 1.9.0; the target checks and prints install commands)
 make docker             # Build Docker image
 make certificate        # Generate self-signed TLS certificates
 ```
@@ -46,6 +46,8 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 3. `render.Engine.RenderJob()` orchestrates:
     - Acquires a browser from `rod.Pool` (headless Chromium instances)
     - Acquires a `zpt.ServerPool` slot → starts ephemeral HTTP server serving ZIP contents on `localhost:PORT`
+    - Creates an isolated browser context for the job whose only proxy is a per-job egress proxy (`pkg/egress`); the
+      context is disposed afterwards (the proxy is closed once the context is disposed or the browser is discarded; if disposal keeps failing on a live browser it stays open in deny-all mode, bounded to that job)
     - Navigates browser to `http://localhost:PORT/<script>` (default: `report.html`)
     - Either waits for `console.log("zpt-view-ready")` (JS event mode) or waits for page load + settling time
     - Calls `page.PDF()` and returns bytes
@@ -58,14 +60,16 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 - **`pkg/render/`** — `Engine` (browser pool + server pool + job execution), `Job`/`JobResult` structs, PDF options
 - **`pkg/zpt/`** — `ZptReader` (ZIP reader wrapper), `ZptServer` (ephemeral HTTP server with path traversal protection),
   `ServerPool` (concurrent slot management)
+- **`pkg/egress/`** — Per-job egress proxy and policy: blocks loopback/private/link-local destinations unless allowed by
+  `zipReport.egressAllow`; dials directly (no upstream proxy chaining)
 - **`pkg/monitor/`** — Prometheus metrics definitions (counters, gauges, histogram)
 - **`pkg/metrics/`** — Prometheus HTTP server configuration
-- **`pkg/browser/`** — Local Chromium downloader with arm64 Linux support (replaces rod's built-in downloader)
+- **`pkg/browser/`** — Chrome for Testing downloader (pinned version, all platforms; replaces rod's built-in downloader)
 
 ### Concurrency Model
 
 - Browser pool (`rod.Pool[rod.Browser]`) with configurable size (default 8)
-- Server pool (`zpt.ServerPool`) with matching concurrency, ports starting at `baseHttpPort` (default 42000)
+- Server pool (`zpt.ServerPool`) with matching concurrency, ports starting at `baseHttpPort` (default 22000)
 - Each render job acquires one browser + one server slot; both are returned to pool after completion
 - Broken browsers (failed connections) are discarded rather than returned to pool
 
@@ -89,6 +93,9 @@ deployments without a config file mount.
 - `test/concurrency_test.go` — Pool behavior under parallel load
 - `test/metrics_test.go` — Prometheus counter/histogram verification
 - `test/helpers_test.go` — PDF parsing utilities (page count, text search, validity check)
+- `test/pdf_geometry_test.go` — Page size, margin and orientation mapping; MediaBox of rendered PDFs
+- `test/listener_bind_test.go` — Report server and egress proxy bind loopback only
+- `internal/apiserver/render_job_test.go` — In-package: `buildRenderJob` parameter clamps and bool parsing
 - `test/fixtures/` — `.zpt` files and their HTML sources
 
 Tests share a single `monitor.Metrics` instance (avoids Prometheus re-registration panics) and use an incrementing port
@@ -97,22 +104,22 @@ counter to prevent conflicts.
 ### Docker Environment
 
 The production Dockerfile uses a two-stage build: Go builder → Wolfi (`cgr.dev/chainguard/wolfi-base`) runtime with
-Chrome dependencies. Wolfi is glibc-based, so the glibc Chromium that `browser-update` downloads runs unmodified.
+Chrome dependencies. Wolfi is glibc-based, so the glibc Chrome that `browser-update` downloads runs unmodified.
 Chrome runtime libs are pulled via `apk` (notably `libudev`, without which Chrome aborts at startup, and `libnss` for
 Mozilla NSS — Wolfi's `nss` package is glibc Name Service Switch, not NSS). Chrome sandbox is disabled inside
-containers (detected via `/.dockerenv` file). The `browser-update` tool downloads the correct Chromium version at
-build time.
+containers (`needsNoSandbox` in `pkg/render/engine.go`: `/.dockerenv`, `/.containerenv`, `KUBERNETES_SERVICE_HOST`, or
+`CI`/`GITHUB_ACTIONS`=`true`). The `browser-update` tool downloads the pinned Chrome for Testing
+build at build time and verifies it against a SHA-256 pinned in `pkg/browser` (update with `Version`). Base images are
+pinned by digest (Dependabot bumps them); `apk` packages deliberately still float so each release build picks up
+current security fixes.
 
 **Multi-platform support**: Docker images are built for `linux/amd64` and `linux/arm64`. The builder stage uses
-`--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chromium
-is sourced from different locations per architecture:
-
-- **amd64**: Google's Chromium snapshots (matches rod's `RevisionDefault`)
-- **arm64**: Playwright CDN (rod's built-in downloader lacks arm64 Linux builds)
+`--platform=$BUILDPLATFORM` with cross-compilation (`CGO_ENABLED=0 GOOS/GOARCH`) to avoid slow QEMU emulation. Chrome
+is the same pinned Chrome for Testing build (`browser.Version`) on both architectures.
 
 ## Module & Dependencies
 
-Module: `zipreport-server` (Go 1.24.12)
+Module: `zipreport-server` (Go 1.27.3)
 
 Key dependencies: `gin-gonic/gin` (HTTP), `go-rod/rod` (Chrome automation), `oddbit-project/blueprint` (DI container +
 HTTP server provider), `prometheus/client_golang` (metrics), `stretchr/testify` (testing).

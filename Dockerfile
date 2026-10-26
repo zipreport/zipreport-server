@@ -1,4 +1,5 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.4 AS builder
+# Base images are pinned by digest; Dependabot (docker ecosystem) bumps the digests.
+FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
@@ -14,12 +15,12 @@ RUN go env -w GOPROXY=$goproxy && go mod download
 # Cross-compile binaries with stripped debug info and injected version
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w -X main.Version=${VERSION}" -o zipreport-server ./cmd/zipreport-server/main.go && \
+    go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o zipreport-server ./cmd/zipreport-server/main.go && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
+    go build -trimpath -buildvcs=false -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
     mkdir -p /app/config/ssl
 
-FROM cgr.dev/chainguard/wolfi-base:latest
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 LABEL org.opencontainers.image.source=https://github.com/zipreport/zipreport-server
 

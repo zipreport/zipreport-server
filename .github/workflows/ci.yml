@@ -12,6 +12,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
@@ -19,6 +22,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -39,9 +44,9 @@ jobs:
           fi
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          version: v2.15.0
 
   test:
     name: Test
@@ -49,6 +54,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -62,6 +69,9 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Install pinned browser
+        run: go run ./cmd/browser-update
+
       - name: Run tests
         run: make test-integration
         timeout-minutes: 10
@@ -73,6 +83,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -89,6 +101,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -98,7 +112,7 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
 
   build-docker:
@@ -108,15 +122,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build Docker image (multi-platform)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: false
@@ -128,22 +144,46 @@ jobs:
           cache-to: type=gha,mode=max
 
   e2e-docker:
-    name: Docker E2E
-    runs-on: ubuntu-24.04
+    name: Docker E2E (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Build Docker image
-        run: docker build -t zipreport-server:e2e .
+        run: docker build -t zipreport-server:e2e-${{ matrix.arch }} .
+
+      - name: Verify image architecture
+        run: |
+          arch=$(docker image inspect --format '{{.Architecture}}' zipreport-server:e2e-${{ matrix.arch }})
+          if [ "$arch" != "${{ matrix.arch }}" ]; then
+            echo "Expected ${{ matrix.arch }}, got $arch"
+            exit 1
+          fi
+
+      - name: Generate API key
+        run: |
+          key=$(openssl rand -hex 32)
+          echo "::add-mask::$key"
+          echo "E2E_API_KEY=$key" >> "$GITHUB_ENV"
 
       - name: Run container
         run: |
-          docker run -d --name zipreport-e2e \
+          docker run -d --name zipreport-e2e-${{ matrix.arch }} \
             -p 6543:6543 \
-            -e ZIPREPORT_API_KEY=test-key \
-            zipreport-server:e2e
+            -e ZIPREPORT_API_KEY="$E2E_API_KEY" \
+            zipreport-server:e2e-${{ matrix.arch }}
 
       - name: Wait for container to be ready
         run: |
@@ -154,7 +194,7 @@ jobs:
             fi
             if [ $i -eq 30 ]; then
               echo "Container failed to start within 30s"
-              docker logs zipreport-e2e
+              docker logs zipreport-e2e-${{ matrix.arch }}
               exit 1
             fi
             sleep 1
@@ -164,27 +204,92 @@ jobs:
         run: |
           HTTP_CODE=$(curl -s -o response.pdf -w "%{http_code}" \
             -X POST http://localhost:6543/v2/render \
-            -H "X-Auth-Key: test-key" \
+            -H "X-Auth-Key: $E2E_API_KEY" \
             -F "report=@test/fixtures/test.zpt" \
             -F "script=test.html" \
             -F "page_size=A4" \
             -F "margins=standard")
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Expected 200, got $HTTP_CODE"
-            docker logs zipreport-e2e
+            docker logs zipreport-e2e-${{ matrix.arch }}
             exit 1
           fi
           head -c 5 response.pdf | grep -q '%PDF' || (echo "Not a valid PDF"; exit 1)
           echo "E2E Docker test passed"
 
+      - name: E2E wrong key is rejected
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:6543/v2/render \
+            -H "X-Auth-Key: $(openssl rand -hex 32)" \
+            -F "report=@test/fixtures/test.zpt" \
+            -F "script=test.html" \
+            -F "page_size=A4" \
+            -F "margins=standard")
+          if [ "$HTTP_CODE" != "401" ]; then
+            echo "Expected 401, got $HTTP_CODE"
+            docker logs zipreport-e2e-${{ matrix.arch }}
+            exit 1
+          fi
+
+      - name: E2E invalid page_size is rejected
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:6543/v2/render \
+            -H "X-Auth-Key: $E2E_API_KEY" \
+            -F "report=@test/fixtures/test.zpt" \
+            -F "script=test.html" \
+            -F "page_size=INVALID" \
+            -F "margins=standard")
+          if [ "$HTTP_CODE" != "400" ]; then
+            echo "Expected 400, got $HTTP_CODE"
+            docker logs zipreport-e2e-${{ matrix.arch }}
+            exit 1
+          fi
+
       - name: Cleanup
         if: always()
-        run: docker rm -f zipreport-e2e
+        run: docker rm -f zipreport-e2e-${{ matrix.arch }}
+
+  test-dedicated:
+    name: Test (dedicated launcher)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Install pinned browser
+        run: go run ./cmd/browser-update
+
+      - name: Allow the Chrome sandbox (user namespaces)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Render tests in dedicated-launcher mode
+        timeout-minutes: 10
+        run: |
+          # dedicated mode needs every needsNoSandbox() input absent (CI/GITHUB_ACTIONS are unset by env -u below)
+          { test -z "$KUBERNETES_SERVICE_HOST" && ! test -e /.dockerenv && ! test -e /.containerenv; } || { echo "not dedicated mode"; exit 1; }
+          env -u CI -u GITHUB_ACTIONS go test -v -p 1 -count=1 \
+            -run '^(TestE2E_PDFGeometry|TestE2E_JSEventMode|TestRender_EgressBlocksInternal|TestRender_FailsClosedWhenContextBypassesProxy|TestJobIsolation_StorageNotShared|TestJobIsolation_ContextsDisposed|TestRenderJob_BeforeUnloadBusyPageReleasesSlot|TestRenderJob_BrowserCrashLeavesNoProxy|TestEngine_DedicatedDiscardRemovesProfile)$' ./test/...
 
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [ test, lint, build, govulncheck, build-docker, e2e-docker ]
+    needs: [ test, test-dedicated, lint, build, govulncheck, build-docker, e2e-docker ]
     if: always()
     steps:
       - name: Verify all jobs passed

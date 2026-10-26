@@ -37,3 +37,21 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+
+  # Docker base images (Dockerfile and Dockerfile.test)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "joao-pinheiro"
+    assignees:
+      - "joao-pinheiro"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"

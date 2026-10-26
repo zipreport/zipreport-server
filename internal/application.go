@@ -1,15 +1,25 @@
 package internal
 
 import (
+	"context"
+	"fmt"
+	"time"
+
 	"zipreport-server/internal/apiserver"
+	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
+	"zipreport-server/pkg/zpt"
 
 	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/config/provider"
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
 )
+
+// ShutdownTimeout bounds all destructors together; it must stay below docker stop's
+// default 10s grace period (Dockerfile STOPSIGNAL SIGINT) or the drain is killed
+const ShutdownTimeout = 8 * time.Second
 
 type CliArgs struct {
 	ConfigFile   *string
@@ -39,6 +49,8 @@ func NewZipReport(args *CliArgs, logger *log.Logger) (*ZipReport, error) {
 }
 
 func (z *ZipReport) Build(appName string) {
+	blueprint.SetShutdownTimeout(ShutdownTimeout)
+
 	var err error
 	z.logger.Infof("initializing %s...", appName)
 
@@ -53,6 +65,7 @@ func (z *ZipReport) Build(appName string) {
 	// initialize logger
 	z.logger.Info("initializing Logging...")
 	z.AbortFatal(cfg.Logging.Validate())
+	z.AbortFatal(log.Configure(cfg.Logging))
 	z.logger, err = cfg.Logging.Logger()
 	z.AbortFatal(err)
 
@@ -60,16 +73,23 @@ func (z *ZipReport) Build(appName string) {
 	metrics := monitor.NewMetrics()
 
 	// initialize ZipReport engine
-	zptEngine := render.NewEngine(z.Context, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
-	if cfg.ZipReport.EnableConsoleLogging {
-		zptEngine.EnableConsoleLog()
+	// Blueprint cancels z.Context before destructors run; the engine must outlive it so the API
+	// destructor can drain in-flight renders. It is cancelled by the engine destructor, which runs last.
+	engineCtx, engineCancel := context.WithCancel(context.WithoutCancel(z.Context))
+	if overlap, lo, hi, ok := zpt.EphemeralRangeOverlap(cfg.ZipReport.BaseHttpPort, cfg.ZipReport.Concurrency); ok && overlap {
+		z.logger.Warn(fmt.Sprintf("render ports %d-%d overlap the OS ephemeral port range %d-%d; outbound connections can take a report port and fail jobs. Lower baseHttpPort below %d or run: sysctl net.ipv4.ip_local_reserved_ports=%d-%d",
+			cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+cfg.ZipReport.Concurrency-1, lo, hi, lo,
+			cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+cfg.ZipReport.Concurrency-1))
 	}
-	if cfg.ZipReport.EnableHttpDebugging {
-		zptEngine.EnableHttpDebugging()
+	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
+	z.AbortFatal(ConfigureEngine(zptEngine, cfg))
+	if cfg.ZipReport.EnableHttpDebugging && HttpDebugSuppressedAt(cfg.Logging.Level) {
+		z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
 	}
 	// register engine destructor to release browsers and ephemeral servers on shutdown
 	blueprint.RegisterDestructor(func() error {
 		zptEngine.Shutdown()
+		engineCancel()
 		return nil
 	})
 
@@ -84,12 +104,13 @@ func (z *ZipReport) Build(appName string) {
 		go func() {
 			if err := prom.Start(); err != nil {
 				z.logger.Error(err, "prometheus metrics server failed")
+				z.AbortFatal(err)
 			}
 		}()
 
 		// register prometheus destructor
 		blueprint.RegisterDestructor(func() error {
-			_ = prom.Shutdown(z.Context)
+			_ = prom.Shutdown(blueprint.ShutdownContext())
 			return nil
 		})
 	}
@@ -103,7 +124,7 @@ func (z *ZipReport) Build(appName string) {
 func (z *ZipReport) Start() {
 	// register apiServer destructor
 	blueprint.RegisterDestructor(func() error {
-		_ = z.api.Shutdown(z.Context)
+		_ = z.api.Shutdown(blueprint.ShutdownContext())
 		return nil
 	})
 
@@ -114,9 +135,34 @@ func (z *ZipReport) Start() {
 				err := z.api.Start()
 				if err != nil {
 					z.logger.Error(err, "zipReport API server failed")
+					z.AbortFatal(err)
 				}
 			}()
 			return nil
 		},
 	)
+}
+
+// ConfigureEngine applies the zipReport settings to the render engine.
+func ConfigureEngine(e *render.Engine, cfg *Config) error {
+	if cfg.ZipReport.EnableConsoleLogging {
+		e.EnableConsoleLog()
+	}
+	if cfg.ZipReport.EnableHttpDebugging {
+		e.EnableHttpDebugging()
+	}
+	policy := egress.Policy{ReservedPorts: []int{cfg.ApiServer.Port}}
+	if cfg.ZipReport.EnableMetrics {
+		policy.ReservedPorts = append(policy.ReservedPorts, cfg.Prometheus.Port)
+	}
+	for _, s := range cfg.ZipReport.EgressAllow {
+		rule, err := egress.ParseRule(s) // validated in cfg.Validate()
+		if err != nil {
+			return err
+		}
+		policy.Allow = append(policy.Allow, rule)
+	}
+	e.SetEgressPolicy(policy)
+	e.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
+	return nil
 }

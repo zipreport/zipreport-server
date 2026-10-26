@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Isolation writer</title></head>
+<body>
+<div>Writer</div>
+<script>
+(async function () {
+  try {
+    localStorage.setItem('zpt-probe', '1');
+    document.cookie = 'zptprobe=1; path=/; max-age=3600';
+    const c = await caches.open('zpt-probe');
+    await c.put('/probe', new Response('x'));
+    await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const d = document.createElement('div');
+    d.style.pageBreakBefore = 'always';
+    d.textContent = 'All writes ok';
+    document.body.appendChild(d);
+  } catch (e) {
+  } finally {
+    console.log('zpt-view-ready');
+  }
+})();
+</script>
+</body></html>

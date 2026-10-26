@@ -1,9 +1,10 @@
-FROM cgr.dev/chainguard/wolfi-base
+# Base image is pinned by digest; Dependabot (docker ecosystem) bumps the digest.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 # Go toolchain + git for module fetches, plus Chromium runtime libraries.
 # Package set mirrors the runtime Dockerfile.
 RUN apk add --no-cache \
-    go-1.26 \
+    go-1.27 \
     git \
     libnss \
     libudev \
@@ -28,7 +29,7 @@ RUN apk add --no-cache \
     font-noto-cjk \
     tzdata
 
-ENV PATH="/usr/lib/go-1.26/bin:${PATH}"
+ENV PATH="/usr/lib/go-1.27/bin:${PATH}"
 
 WORKDIR /app
 
@@ -44,4 +45,4 @@ RUN go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && 
 # Mark as Docker environment for --no-sandbox detection
 RUN touch /.dockerenv
 
-CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/..."]
+CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/...", "./internal/..."]

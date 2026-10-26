@@ -5,6 +5,68 @@ All notable changes to ZipReport Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0]
+
+This release contains breaking changes; see the upgrade notes in `docs/migration-guide.md` ("Upgrading from 2.4.x to 3.0.0"). Entries marked **Breaking:** need action on upgrade.
+
+### Added
+- New `zipReport.egressAllow` (CIDRs or exact `host:port`) to permit intranet asset hosts through the egress proxy
+- `enableHttpDebugging` now works (it was a no-op): configs that already set it to `true` will start emitting per-request Info lines
+
+### Changed
+- **Breaking:** rendered content no longer uses the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored); the per-job proxy dials directly, so deployments that depend on an outbound proxy lose external assets (chaining is a deferred follow-up). A Chrome started with a process-wide proxy switch (`--proxy-server`, `--proxy-pac-url`, `--no-proxy-server`) is refused
+- **Breaking:** a failure to start the API or metrics listener (for example the port is in use) now exits the process with a non-zero status; previously it was logged and the process kept running
+- **Breaking:** `timeout_job` now includes time spent waiting for a free render slot; a disconnected client cancels its job (the job stops at its next wait: slot wait, page creation, JS-event or settling wait, and its result reports `ErrJobCancelled`; navigation and PDF steps report the underlying context error); the API write deadline is re-armed after the upload to `timeout_job` + the configured `writeTimeout`. Known limits: a client that half-closes its socket after sending its request cancels its own job, and disconnect detection needs the request body to be read to EOF
+- **Breaking:** the API `writeTimeout` now defaults to 720s (and the shipped sample changes from 600 to 720). The write deadline is re-armed after the upload to `timeout_job` + `writeTimeout`, so `writeTimeout` only needs to cover the upload (at least `readTimeout`); 600 still works. Previously the default was 60s when omitted, which cut renders over 60s. `readTimeout` defaults to 600s, `0` means default, and new 15s header and 60s idle timeouts apply. Explicit timeouts keep their values
+- **Breaking:** the default `baseHttpPort` is now 22000 (was 42000). The old default lies inside the Linux ephemeral port range (32768-60999), so outbound sockets, including the per-job egress proxy's, could take a report port and fail the job. Configs that set `baseHttpPort` explicitly (including 42000) keep their value and log a startup warning when the render ports overlap the ephemeral range. Ephemeral report servers now also bind synchronously and skip a held port in favour of the next slot
+- **Breaking:** `zipReport.readTimeoutSeconds` and `zipReport.writeTimeoutSeconds` now apply to the per-job report servers (they were ignored before)
+- **Breaking:** the bundled browser moves from Chromium ~131 (snapshot revision 1321438) to Chrome for Testing 156.0.8078.47 on all architectures, and site isolation is re-enabled (rod's defaults disabled it). Expect higher memory use per job (site isolation runs more renderer processes). Cross-site iframes now run out of process, so their `console.log` output, including `zpt-view-ready`, is no longer seen by the engine; a report that signals readiness from a cross-site iframe will hit the JS timeout, so signal from the top-level page instead
+- The `bin=` option of the `rod` environment variable is ignored; the browser is always the pinned build, resolved once at startup
+- Updated `blueprint` to v0.16.0 and `blueprint/provider/httpserver` to v0.11.0
+- Graceful stop now drains in-flight renders for up to 8 seconds (SIGINT/SIGTERM); the render engine is shut down after the API server stops accepting requests
+- Every log line now includes a `hostname` field (`log.includeHostname`, default `true`, was previously ignored); set it to `false` to drop it
+- Default `log.callerSkipFrames` is now 3 (Blueprint default)
+- TLS: with `tlsEnable`, an incomplete `tlsCert`/`tlsKey` pair now aborts startup; the mTLS `tlsAllowedDNSNames` check, which was inverted before Blueprint v0.12, now works as documented
+- Podman and Kubernetes containers are detected like Docker (`--no-sandbox`, shared browser)
+- Updated `prometheus/client_golang` to v1.25.0, `prometheus/client_model` to v0.6.3 and `stretchr/testify` to v1.12.1
+- Docker base images are pinned by digest (bumped by Dependabot); apk packages still float
+- The Chrome for Testing download is verified against a pinned SHA-256 and refused on mismatch
+- Go binaries are built with `-trimpath -buildvcs=false` for reproducible output
+- Pushing a `v*` tag now publishes the versioned Docker images and the image and source SBOMs (previously only the release was created); a release created in the GitHub UI for an existing tag no longer triggers any build
+- **Breaking:** Docker images are published only from `v*` release tags. Pushes to `master`/`main`, the daily scheduled rebuild and manual dispatch no longer publish, so `latest` is the latest non-prerelease release (not the default branch) and the `master`/`main` branch image tags are no longer updated
+- Releases created in the GitHub UI no longer get duplicate `zipreport-zipreport-server_*` SBOM assets
+- A request body over 128 MiB is now answered with 413 instead of 400
+- `X-Forwarded-For` and `X-Real-IP` are ignored unless `apiServer.trustedProxies` is set; with the default `[]` the logged `client_ip` is the socket peer (previously any client could forge it). Set `trustedProxies` when running behind a reverse proxy whose client IPs you want logged
+- The `conversion_time` histogram buckets changed to 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 450 and 600 seconds so slow jobs no longer all land in `+Inf`; dashboards that use the old `le` values need updating
+
+### Fixed
+- A render whose browser context could not be disposed no longer leaves its egress proxy open forever: the proxy cuts its live connections at once and is closed once the context is disposed or the browser is discarded; if disposal keeps failing on a live browser it stays open in deny-all mode (bounded to that job)
+- The job deadline is now honoured while waiting in js_event mode and during the settling wait
+- The uploaded report file is now closed when the request ends
+- A page with a `beforeunload` handler and a busy renderer no longer holds its render slot, browser and egress proxy forever; page close is bounded to 5s
+- Console handling no longer waits on the renderer, so a console flood cannot grow memory without bound; with `enableConsoleLogging`, at most 200 console and browser log entries are logged per job and object arguments are logged as Chrome's short description instead of their JSON value
+- Non-finite (`NaN`, `Inf`) margins, and `margins=custom` values that consume the whole page, are now refused with 400 up front instead of failing after the render
+- An empty or invalid `prometheus.endpoint` and a `prometheus.port` above 65535 are refused at startup instead of panicking
+- Startup now refuses a `baseHttpPort` range that exceeds port 65535 or overlaps `apiServer.port` or (with metrics enabled) `prometheus.port`, and `apiServer.port` equal to `prometheus.port`
+- The metrics server now has read-header, read, write and idle timeouts
+- An active CONNECT tunnel (for example a long HTTPS download) is no longer cut after 60s because one direction was quiet; a tunnel closes only when neither direction moves data for 60s
+- Chrome profile directories (`/tmp/rod/user-data/*`) are now removed when a browser is discarded, relaunched or shut down, instead of accumulating
+- The Chrome for Testing download no longer hangs on a stalled connection (2 minute stall limit, 60s response-header timeout) and is capped at 512 MiB
+- On macOS the Chrome for Testing archive is extracted with its framework symlinks intact; absolute and `..` link targets are refused
+
+### Security
+- Each render job's browser traffic now goes through a per-job egress proxy that refuses loopback, local-interface and private destinations (including names that resolve to them, link-local and cloud metadata). Rendered pages can no longer reach other jobs' servers, the API, the metrics endpoint or the internal network. Residual risks are listed in the README
+- Bumped Go toolchain from 1.26.4 to 1.27.3, resolving 16 reachable standard-library advisories (net/http, crypto/tls, crypto/x509, net/url, net/textproto, encoding/asn1); golang.org/x/net is now v0.60.0
+- `tlsKeyPasswordEnvVar` is no longer cleared after it is read (Blueprint v0.12+), so Chromium child processes inherit it; prefer `tlsKeyPasswordFile`
+- **Breaking:** the server refuses to start when `authTokenSecret` / `ZIPREPORT_API_KEY` is empty, shorter than 32 characters, padded with whitespace, or a placeholder value published in earlier sample configs and docs. The Docker image no longer ships a usable token
+- `NewApiServer` returns an error instead of disabling authentication when given an empty secret
+- Documentation examples generate secrets with `openssl rand -hex 32`; the CI e2e job generates its key per run
+- Render jobs run in isolated, disposable browser contexts, and `ignore_ssl_errors` is scoped to the job's page. Previously one job's storage, cookies or service workers, and its certificate override, could affect other jobs. The browser HTTP cache no longer persists between jobs; worker/service-worker requests are not covered by `ignore_ssl_errors` (see README)
+- Zip entries are now streamed and size-checked while they are read, and requests whose `Host` header does not match the report server are rejected with 421
+- The Docker image is scanned with Trivy before it is pushed and nothing is published when the scan fails; the gate is CRITICAL-only for fixed OS vulnerabilities, as configured (it previously failed on any severity)
+- CI and release workflows pin third-party actions by commit SHA and tools by version, default to read-only tokens, do not persist checkout credentials, and expose Dependency-Track secrets only to the upload step
+- Release source SBOMs are scanned with Grype before the image is pushed or the release created; a failure publishes nothing
+
 ## [2.4.1]
 
 ### Changed

@@ -3,8 +3,10 @@ package zpt
 import (
 	"context"
 	"sync"
+	"time"
 	"zipreport-server/pkg/monitor"
 
+	"github.com/oddbit-project/blueprint"
 	"github.com/oddbit-project/blueprint/log"
 )
 
@@ -14,8 +16,13 @@ type ServerPool struct {
 	ctx      context.Context
 	pool     []*ZptServer
 	BasePort int
-	metrics  *monitor.Metrics
-	logger   *log.Logger
+
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	HttpDebug    bool
+
+	metrics *monitor.Metrics
+	logger  *log.Logger
 }
 
 func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, m *monitor.Metrics, logger *log.Logger) *ServerPool {
@@ -28,8 +35,12 @@ func NewServerPoolWithContext(ctx context.Context, limit int, basePort int, m *m
 		ctx:      ctx,
 		pool:     make([]*ZptServer, limit),
 		BasePort: basePort,
-		metrics:  m,
-		logger:   logger,
+
+		ReadTimeout:  ReadTimeout,
+		WriteTimeout: WriteTimeout,
+
+		metrics: m,
+		logger:  logger,
 	}
 }
 
@@ -38,33 +49,47 @@ func NewServerPool(limit int, basePort int, m *monitor.Metrics, logger *log.Logg
 }
 
 func (p *ServerPool) BuildServer(reader *ZptReader) *ZptServer {
-	<-p.slots // read slot
-	p.mx.Lock()
-	idx := -1
-	for i, val := range p.pool {
-		if val == nil {
-			idx = i
-			break
-		}
-	}
+	return p.BuildServerContext(context.Background(), reader)
+}
 
-	if idx == -1 {
-		// should never happen
-		p.mx.Unlock()
-		p.slots <- nil // Return the slot
-		p.logger.Error(nil, "pool inconsistency: no available slot found")
+// BuildServerContext is BuildServer, but gives up waiting for a slot when ctx ends.
+func (p *ServerPool) BuildServerContext(ctx context.Context, reader *ZptReader) *ZptServer {
+	select {
+	case <-p.slots: // read slot
+	case <-ctx.Done():
 		return nil
 	}
+	if ctx.Err() != nil { // select picks at random when both are ready
+		p.slots <- nil
+		return nil
+	}
+	p.mx.Lock()
+	for idx, val := range p.pool {
+		if val != nil {
+			continue
+		}
+		server := NewZptServer(reader, p.BasePort+idx, p.logger)
+		server.Server.ReadTimeout = p.ReadTimeout
+		server.Server.WriteTimeout = p.WriteTimeout
+		server.HttpDebug = p.HttpDebug
+		if err := server.Listen(); err != nil {
+			p.logger.Error(err, "ephemeral report port is held by another process; check baseHttpPort and net.ipv4.ip_local_reserved_ports", log.KV{"address": server.Server.Addr})
+			continue
+		}
+		p.pool[idx] = server
+		p.mx.Unlock()
+		p.metrics.HttpServers.Inc()
+		go func() {
+			_ = server.Run() // blocking call; error logged inside Run()
+			p.metrics.HttpServers.Dec()
+		}()
+		return server
+	}
 
-	server := NewZptServer(reader, p.BasePort+idx, p.logger)
-	p.pool[idx] = server
+	// no slot could be bound
 	p.mx.Unlock()
-	p.metrics.HttpServers.Inc()
-	go func() {
-		_ = server.Run() // blocking call; error logged inside Run()
-		p.metrics.HttpServers.Dec()
-	}()
-	return server
+	p.slots <- nil // Return the slot
+	return nil
 }
 
 func (p *ServerPool) RemoveServer(srv *ZptServer) bool {
@@ -91,9 +116,7 @@ func (p *ServerPool) Shutdown() {
 	// shutdown all servers
 	for i, srv := range p.pool {
 		if srv != nil {
-			if srv.Shutdown(p.ctx) == nil {
-				p.metrics.HttpServers.Dec()
-			}
+			_ = srv.Shutdown(blueprint.ShutdownContext())
 		}
 		p.pool[i] = nil
 	}

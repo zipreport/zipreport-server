@@ -1,7 +1,9 @@
 package apiserver
 
 import (
+	"errors"
 	"net/http"
+	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -15,7 +17,7 @@ import (
 // usage from oversized or malicious uploads.
 const MaxUploadBytes = 128 << 20 // 128 MiB
 
-func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
+func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics, writeTimeout time.Duration) {
 	// cap request body size
 	g.Request.Body = http.MaxBytesReader(g.Writer, g.Request.Body, MaxUploadBytes)
 
@@ -28,11 +30,25 @@ func renderAction(g *gin.Context, e *render.Engine, m *monitor.Metrics) {
 	logger := log.FromContext(g)
 
 	m.TotalOps.Inc() // update metrics
-	job, err := buildRenderJob(g, reqId)
+	job, closer, err := buildRenderJob(g, reqId)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			logger.Warn("request body too large", log.KV{"reqId": reqId, "limit": tooLarge.Limit})
+			errTooLarge(g)
+			return
+		}
 		logger.Error(err, "error building render job", log.KV{"reqId": reqId})
 		errBadRequest(g, "error building render job")
 		return
+	}
+	defer func() { _ = closer.Close() }()
+
+	// the server's WriteTimeout started at header read and also covered the upload;
+	// from here the response must only wait for the job
+	rc := http.NewResponseController(g.Writer)
+	if err := rc.SetWriteDeadline(time.Now().Add(job.Timeout() + writeTimeout)); err != nil {
+		logger.Warn("cannot extend write deadline", log.KV{"reqId": reqId, "error": err.Error()})
 	}
 
 	result := e.RenderJob(job)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"zipreport-server/pkg/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -151,4 +152,27 @@ func TestMetrics_ConversionTime(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	_ = ctx
+}
+
+func TestPrometheusServer_Timeouts(t *testing.T) {
+	srv, err := metrics.NewServer(metrics.NewPrometheusConfig(), nil)
+	require.NoError(t, err)
+	assert.NotZero(t, srv.Server.ReadHeaderTimeout)
+	assert.NotZero(t, srv.Server.ReadTimeout)
+	assert.NotZero(t, srv.Server.WriteTimeout)
+	assert.NotZero(t, srv.Server.IdleTimeout)
+}
+
+func TestConversionTimeBuckets(t *testing.T) {
+	ch := make(chan prometheus.Metric, 1)
+	sharedMetrics.ConversionTime.Collect(ch)
+	var metric dto.Metric
+	require.NoError(t, (<-ch).Write(&metric))
+
+	var bounds []float64
+	for _, b := range metric.GetHistogram().GetBucket() {
+		bounds = append(bounds, b.GetUpperBound())
+	}
+	assert.Contains(t, bounds, 120.0)
+	assert.Contains(t, bounds, 600.0)
 }

@@ -3,29 +3,61 @@ package internal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
+	"strings"
+	"time"
 	"zipreport-server/internal/apiserver"
+	"zipreport-server/pkg/egress"
 	"zipreport-server/pkg/metrics"
 	"zipreport-server/pkg/render"
 
 	"github.com/oddbit-project/blueprint/log"
 	"github.com/oddbit-project/blueprint/provider/httpserver"
+	"github.com/rs/zerolog"
 )
 
 const (
 	DefaultReadTimeoutSeconds  = 300
 	DefaultWriteTimeoutSeconds = 300
 	DefaultPort                = 6543
+	// API read covers headers and the multipart upload (<=128 MiB); slow headers are
+	// bounded separately by ReadHeaderTimeout.
+	DefaultApiReadTimeout = 600
+	// API write is armed after the request headers are read and so covers the upload (it must be
+	// >= the read timeout); renderAction re-arms it after the upload to job timeout + write timeout.
+	DefaultApiWriteTimeout = render.JobMaxTimeout + 120
+	MinAuthSecretLength    = 32
 )
 
+var (
+	ErrEmptyAuthSecret       = errors.New("authTokenSecret option cannot be empty")
+	ErrWhitespaceAuthSecret  = errors.New("authTokenSecret must not start or end with whitespace")
+	ErrPlaceholderAuthSecret = errors.New("authTokenSecret is a publicly documented placeholder; set a unique secret in apiServer.authTokenSecret or ZIPREPORT_API_KEY")
+	ErrWeakAuthSecret        = errors.New("authTokenSecret must be at least 32 characters; generate one with: openssl rand -hex 32")
+)
+
+// values published as example secrets in sample configs and docs
+var placeholderAuthSecrets = []string{
+	"my-super-secret-token",
+	"your-secret",
+	"your-secure-random-token-here",
+	"your-secret-key",
+	"my-secret",
+	"your-secure-token-here",
+	"<generate: openssl rand -hex 32>",
+}
+
 type ZipReportConfig struct {
-	ReadTimeoutSeconds   int  `json:"readTimeoutSeconds"`
-	WriteTimeoutSeconds  int  `json:"writeTimeoutSeconds"`
-	EnableConsoleLogging bool `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
-	EnableHttpDebugging  bool `json:"enableHttpDebugging"`
-	EnableMetrics        bool `json:"enableMetrics"` // Enable Prometheus endpoint
-	Concurrency          int  `json:"concurrency"`   // Concurrent browser instances
-	BaseHttpPort         int  `json:"baseHttpPort"`  // Internal HTTP server base port
+	ReadTimeoutSeconds   int      `json:"readTimeoutSeconds"`
+	WriteTimeoutSeconds  int      `json:"writeTimeoutSeconds"`
+	EnableConsoleLogging bool     `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
+	EnableHttpDebugging  bool     `json:"enableHttpDebugging"`
+	EnableMetrics        bool     `json:"enableMetrics"` // Enable Prometheus endpoint
+	Concurrency          int      `json:"concurrency"`   // Concurrent browser instances
+	BaseHttpPort         int      `json:"baseHttpPort"`  // Internal HTTP server base port
+	EgressAllow          []string `json:"egressAllow"`   // CIDRs or exact host:port a rendered page may reach beyond public addresses
 }
 
 type Config struct {
@@ -43,7 +75,12 @@ func NewZipReportConfig() *ZipReportConfig {
 		EnableMetrics:        false,
 		Concurrency:          render.DefaultConcurrency,
 		BaseHttpPort:         render.DefaultBasePort,
+		EgressAllow:          []string{},
 	}
+}
+
+func (c *ZipReportConfig) ServerTimeouts() (read, write time.Duration) {
+	return time.Duration(c.ReadTimeoutSeconds) * time.Second, time.Duration(c.WriteTimeoutSeconds) * time.Second
 }
 
 func (c *ZipReportConfig) Validate() error {
@@ -57,7 +94,15 @@ func (c *ZipReportConfig) Validate() error {
 		return errors.New("concurrency must be greater than zero")
 	}
 	if c.BaseHttpPort < 1024 {
-		return errors.New("baseHttpPort must be greater than 1024")
+		return errors.New("baseHttpPort must be at least 1024")
+	}
+	if c.BaseHttpPort+c.Concurrency-1 > 65535 {
+		return errors.New("baseHttpPort + concurrency - 1 must not exceed 65535")
+	}
+	for i, s := range c.EgressAllow {
+		if _, err := egress.ParseRule(s); err != nil {
+			return fmt.Errorf("zipReport.egressAllow[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -74,10 +119,12 @@ func NewConfig() *Config {
 func apiServerConfig() *apiserver.ApiServerConfig {
 	sc := httpserver.NewServerConfig()
 	sc.Port = DefaultPort
+	sc.ReadTimeout = DefaultApiReadTimeout
+	sc.WriteTimeout = DefaultApiWriteTimeout
 	return &apiserver.ApiServerConfig{
 		ServerConfig:           *sc,
 		AuthTokenHeader:        "X-Auth-Key",
-		AuthTokenSecret:        "my-super-secret-token",
+		AuthTokenSecret:        "",
 		DefaultSecurityHeaders: true,
 	}
 }
@@ -86,13 +133,29 @@ func (c *Config) Validate() error {
 	if c.ApiServer == nil {
 		return errors.New("apiServer is required")
 	}
+	if c.ApiServer.ReadTimeout <= 0 {
+		c.ApiServer.ReadTimeout = DefaultApiReadTimeout
+	}
+	if c.ApiServer.WriteTimeout <= 0 {
+		c.ApiServer.WriteTimeout = DefaultApiWriteTimeout
+	}
 	if err := c.ApiServer.Validate(); err != nil {
 		return err
 	}
 
-	// validate auth secret is set
-	if len(c.ApiServer.AuthTokenSecret) == 0 {
-		return errors.New("authTokenSecret option cannot be empty")
+	s := c.ApiServer.AuthTokenSecret
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return ErrEmptyAuthSecret
+	}
+	if t != s {
+		return ErrWhitespaceAuthSecret
+	}
+	if slices.Contains(placeholderAuthSecrets, t) {
+		return ErrPlaceholderAuthSecret
+	}
+	if len(t) < MinAuthSecretLength {
+		return ErrWeakAuthSecret
 	}
 
 	if c.ZipReport == nil {
@@ -109,6 +172,18 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	first, last := c.ZipReport.BaseHttpPort, c.ZipReport.BaseHttpPort+c.ZipReport.Concurrency-1
+	if c.ApiServer.Port >= first && c.ApiServer.Port <= last {
+		return fmt.Errorf("apiServer.port %d is inside the report port range %d-%d", c.ApiServer.Port, first, last)
+	}
+	if c.ZipReport.EnableMetrics {
+		if c.Prometheus.Port >= first && c.Prometheus.Port <= last {
+			return fmt.Errorf("prometheus.port %d is inside the report port range %d-%d", c.Prometheus.Port, first, last)
+		}
+		if c.Prometheus.Port == c.ApiServer.Port {
+			return errors.New("prometheus.port must differ from apiServer.port")
+		}
+	}
 	if c.Logging == nil {
 		return errors.New("logging is required")
 	}
@@ -121,7 +196,7 @@ func (c *Config) Validate() error {
 // ApplyEnvOverrides applies environment variable overrides to the config.
 // Environment variables take precedence over config file values.
 // Supported variables:
-//   - ZIPREPORT_API_KEY: overrides apiServer.options.authTokenSecret
+//   - ZIPREPORT_API_KEY: overrides apiServer.authTokenSecret
 func (c *Config) ApplyEnvOverrides() {
 	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
 		c.ApiServer.AuthTokenSecret = apiKey
@@ -131,4 +206,10 @@ func (c *Config) ApplyEnvOverrides() {
 func (c *Config) DumpDefaults() (string, error) {
 	result, err := json.MarshalIndent(c, "", "  ")
 	return string(result), err
+}
+
+// HttpDebugSuppressedAt reports whether the log level filters out Info lines.
+func HttpDebugSuppressedAt(level string) bool {
+	lvl, err := zerolog.ParseLevel(level)
+	return err == nil && lvl > zerolog.InfoLevel
 }

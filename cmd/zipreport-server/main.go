@@ -13,7 +13,7 @@ import (
 const ProductName = "ZipReport Server"
 
 // Version is set at build time via -ldflags "-X main.Version=..."
-var Version = "2.4.1"
+var Version = "3.0.0"
 
 // command-line args
 var cliArgs = &internal.CliArgs{
@@ -23,17 +23,6 @@ var cliArgs = &internal.CliArgs{
 }
 
 func main() {
-	// disable -rod cli flag
-	_ = os.Setenv("DISABLE_ROD_FLAG", "true")
-
-	// Check if running in CI/Docker environment and disable Chrome sandbox
-	// GitHub Actions and Docker containers don't have Chrome sandbox support
-	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
-		_ = os.Setenv("rod_launcher", "--no-sandbox")
-	} else if _, err := os.Stat("/.dockerenv"); err == nil {
-		_ = os.Setenv("rod_launcher", "--no-sandbox")
-	}
-
 	// config logger
 	utils.PanicOnError(log.Configure(log.NewDefaultConfig()))
 	logger := log.New("zipreport-server")

@@ -3,10 +3,10 @@
     "host": "",
     "port": 6543,
     "readTimeout": 600,
-    "writeTimeout": 600,
+    "writeTimeout": 720,
     "debug": false,
     "authTokenHeader": "X-Auth-Key",
-    "authTokenSecret": "my-super-secret-token",
+    "authTokenSecret": "",
     "defaultSecurityHeaders": true,
     "trustedProxies": [],
     "tlsEnable": false
@@ -24,6 +24,6 @@
     "enableHttpDebugging": false,
     "enableMetrics": false,
     "concurrency": 8,
-    "baseHttpPort": 42000
+    "baseHttpPort": 22000
   }
 }

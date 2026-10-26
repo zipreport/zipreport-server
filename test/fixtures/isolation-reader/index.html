@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Isolation reader</title></head>
+<body>
+<div>Reader</div>
+<script>
+function addPage(text) {
+  const d = document.createElement('div');
+  d.style.pageBreakBefore = 'always';
+  d.textContent = text;
+  document.body.appendChild(d);
+}
+(async function () {
+  try {
+    let leaked = false;
+    if (localStorage.getItem('zpt-probe')) leaked = true;
+    if (document.cookie.indexOf('zptprobe=') >= 0) leaked = true;
+    if ((await navigator.serviceWorker.getRegistrations()).length > 0) leaked = true;
+    if ((await caches.keys()).length > 0) leaked = true;
+    addPage('Checked');
+    if (leaked) addPage('Leaked');
+  } catch (e) {
+  } finally {
+    console.log('zpt-view-ready');
+  }
+})();
+</script>
+</body></html>

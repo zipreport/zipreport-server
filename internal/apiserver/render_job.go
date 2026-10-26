@@ -2,6 +2,8 @@ package apiserver
 
 import (
 	"errors"
+	"io"
+	"math"
 	"strconv"
 	"zipreport-server/pkg/render"
 	"zipreport-server/pkg/zpt"
@@ -84,7 +86,11 @@ func strFloatValue(ctx *gin.Context, name string, defaultValue float64) (float64
 	if v, exists := ctx.GetPostForm(name); !exists {
 		return defaultValue, nil
 	} else {
-		return strconv.ParseFloat(v, 64)
+		f, err := strconv.ParseFloat(v, 64)
+		if err == nil && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			return 0, errInvalidMarginValue
+		}
+		return f, err
 	}
 }
 
@@ -93,45 +99,50 @@ func strFloatValue(ctx *gin.Context, name string, defaultValue float64) (float64
  * To simplify implementation of optional fields and validation of specific values,
  * Bind() is not used
  */
-func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, error) {
+func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, io.Closer, error) {
 	// validate zpt stream
 	report, rptinfo, err := c.Request.FormFile(ParamReport)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	fail := func(err error) (*render.Job, io.Closer, error) {
+		_ = report.Close()
+		return nil, nil, err
 	}
 	// build render job
 	reader, err := zpt.NewZptReader(report, rptinfo.Size)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	job := render.NewRenderJob(reader, reqId)
+	job.Ctx = c.Request.Context()
 
 	// validate page size
 	job.PageSize = c.Request.PostFormValue(ParamPageSize)
 	if !strExists(job.PageSize, render.ValidPageSizes) {
-		return nil, errInvalidPageSize
+		return fail(errInvalidPageSize)
 	}
 	// validate margin style
 	job.MarginStyle = c.Request.PostFormValue(ParamMarginStyle)
 	if !strExists(job.MarginStyle, render.ValidMarginStyle) {
-		return nil, errInvalidMarginStyle
+		return fail(errInvalidMarginStyle)
 	}
 	job.MarginLeft, err = strFloatValue(c, ParamMarginLeft, 0)
 	if err != nil || job.MarginLeft < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 
 	job.MarginRight, err = strFloatValue(c, ParamMarginRight, 0)
 	if err != nil || job.MarginRight < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 	job.MarginTop, err = strFloatValue(c, ParamMarginTop, 0)
 	if err != nil || job.MarginTop < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 	job.MarginBottom, err = strFloatValue(c, ParamMarginBottom, 0)
 	if err != nil || job.MarginBottom < 0 {
-		return nil, errInvalidMarginValue
+		return fail(errInvalidMarginValue)
 	}
 
 	// validate main script
@@ -141,11 +152,23 @@ func buildRenderJob(c *gin.Context, reqId uuid.UUID) (*render.Job, error) {
 	}
 
 	job.Landscape = optionalBoolValue(c, ParamLandscape, false)
+
+	// Chrome rejects margins that consume the oriented page; refuse before rendering
+	if job.MarginStyle == render.MarginCustom {
+		o := job.ToPDFOptions()
+		w, h := *o.PaperWidth, *o.PaperHeight
+		if job.Landscape {
+			w, h = h, w
+		}
+		if job.MarginLeft+job.MarginRight > w || job.MarginTop+job.MarginBottom > h {
+			return fail(errInvalidMarginValue)
+		}
+	}
 	job.JobSettlingTimeMs = clampInt(optionalIntValue(c, ParamSettlingTime, render.JobDefaultSettlingTime), 0, render.JobMaxSettlingTime)
 	job.JobTimeoutS = clampInt(optionalIntValue(c, ParamJobTimeout, render.JobDefaultTimeout), 1, render.JobMaxTimeout)
 	job.JsTimeoutS = clampInt(optionalIntValue(c, ParamJsTimeout, render.JobDefaultJsTimeout), 1, render.JobMaxJsTimeout)
 	job.UseJSEvent = optionalBoolValue(c, ParamJsEvent, false)
 	job.IgnoreSSLErrors = optionalBoolValue(c, IgnoreSslErr, false)
 
-	return job, nil
+	return job, report, nil
 }

@@ -2,6 +2,8 @@ package apiserver
 
 import (
 	"crypto/subtle"
+	"errors"
+	"time"
 	"zipreport-server/pkg/monitor"
 	"zipreport-server/pkg/render"
 
@@ -11,10 +13,10 @@ import (
 	"github.com/oddbit-project/blueprint/provider/httpserver/auth"
 )
 
+// httpserver does not expose these; without them net/http falls back to ReadTimeout.
 const (
-	DefaultReadTimeout  = 300
-	DefaultWriteTimeout = 300
-	DefaultPort         = 6543
+	ReadHeaderTimeout = 15 * time.Second
+	IdleTimeout       = 60 * time.Second
 )
 
 // ApiServerConfig holds the HTTP server settings plus token-auth and
@@ -48,6 +50,14 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	if err != nil {
 		return nil, err
 	}
+	// gin trusts every proxy when none is configured, so forwarded headers could forge the client IP
+	if len(cfg.TrustedProxies) == 0 {
+		if err := srv.Router.SetTrustedProxies(nil); err != nil {
+			return nil, err
+		}
+	}
+	srv.Server.ReadHeaderTimeout = ReadHeaderTimeout
+	srv.Server.IdleTimeout = IdleTimeout
 
 	if cfg.DefaultSecurityHeaders {
 		srv.UseDefaultSecurityHeaders()
@@ -57,14 +67,15 @@ func NewApiServer(cfg *ApiServerConfig, engine *render.Engine, metrics *monitor.
 	if header == "" {
 		header = auth.DefaultTokenAuthHeader
 	}
-	if cfg.AuthTokenSecret != "" {
-		srv.UseAuth(constantTimeToken{header: header, key: cfg.AuthTokenSecret})
+	if cfg.AuthTokenSecret == "" {
+		return nil, errors.New("authTokenSecret cannot be empty")
 	}
+	srv.UseAuth(constantTimeToken{header: header, key: cfg.AuthTokenSecret})
 
 	v := srv.Group("v2")
 	{
 		v.POST("/render", func(g *gin.Context) {
-			renderAction(g, engine, metrics)
+			renderAction(g, engine, metrics, time.Duration(cfg.WriteTimeout)*time.Second)
 		})
 	}
 

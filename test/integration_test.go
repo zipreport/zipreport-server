@@ -27,7 +27,7 @@ var (
 	// Shared metrics instance to avoid duplicate registration
 	sharedMetrics = monitor.NewMetrics()
 	// Port counter to avoid conflicts between tests
-	portCounter = 42000
+	portCounter = 22000
 )
 
 // setupTestServer creates a test API server instance
@@ -66,6 +66,29 @@ func setupTestServer(t *testing.T) (*httpserver.Server, *render.Engine, context.
 	return srv, engine, ctx, cancel
 }
 
+// setupAPIServer builds the API without a render engine, for tests that never reach
+// rendering (auth and request validation); it needs no browser.
+func setupAPIServer(t *testing.T) *httpserver.Server {
+	logConfig := log.NewDefaultConfig()
+	logConfig.Level = "error"
+	require.NoError(t, log.Configure(logConfig))
+	logger := log.New("test")
+
+	cfg := &apiserver.ApiServerConfig{
+		ServerConfig:           *httpserver.NewServerConfig(),
+		AuthTokenHeader:        "X-Auth-Key",
+		AuthTokenSecret:        testAuthToken,
+		DefaultSecurityHeaders: true,
+	}
+	cfg.Host = "localhost"
+	cfg.Port = 0
+
+	srv, err := apiserver.NewApiServer(cfg, nil, sharedMetrics, logger)
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+	return srv
+}
+
 // createMultipartRequest creates a multipart form request with a file upload
 func createMultipartRequest(t *testing.T, zipPath string, fields map[string]string) *http.Request {
 	body := &bytes.Buffer{}
@@ -99,6 +122,9 @@ func createMultipartRequest(t *testing.T, zipPath string, fields map[string]stri
 
 // TestRenderEndpoint_Success tests successful PDF generation
 func TestRenderEndpoint_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -131,9 +157,7 @@ func TestRenderEndpoint_Success(t *testing.T) {
 
 // TestRenderEndpoint_MissingAuth tests authentication requirement
 func TestRenderEndpoint_MissingAuth(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -147,14 +171,11 @@ func TestRenderEndpoint_MissingAuth(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidAuth tests invalid authentication token
 func TestRenderEndpoint_InvalidAuth(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -170,14 +191,11 @@ func TestRenderEndpoint_InvalidAuth(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_MissingFile tests missing report file
 func TestRenderEndpoint_MissingFile(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -192,14 +210,11 @@ func TestRenderEndpoint_MissingFile(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidPageSize tests invalid page size validation
 func TestRenderEndpoint_InvalidPageSize(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -213,14 +228,11 @@ func TestRenderEndpoint_InvalidPageSize(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_InvalidMarginStyle tests invalid margin style validation
 func TestRenderEndpoint_InvalidMarginStyle(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -234,14 +246,11 @@ func TestRenderEndpoint_InvalidMarginStyle(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_NegativeMargins tests negative margin validation
 func TestRenderEndpoint_NegativeMargins(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
+	srv := setupAPIServer(t)
 
 	zipPath := filepath.Join("fixtures", "test.zpt")
 	req := createMultipartRequest(t, zipPath, map[string]string{
@@ -259,11 +268,13 @@ func TestRenderEndpoint_NegativeMargins(t *testing.T) {
 	srv.Router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	_ = ctx
 }
 
 // TestRenderEndpoint_CustomMargins tests custom margin values
 func TestRenderEndpoint_CustomMargins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -291,6 +302,9 @@ func TestRenderEndpoint_CustomMargins(t *testing.T) {
 
 // TestRenderEndpoint_LandscapeOrientation tests landscape page orientation
 func TestRenderEndpoint_LandscapeOrientation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -315,6 +329,9 @@ func TestRenderEndpoint_LandscapeOrientation(t *testing.T) {
 
 // TestRenderEndpoint_NestedFile tests rendering a file in a subdirectory
 func TestRenderEndpoint_NestedFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -338,6 +355,9 @@ func TestRenderEndpoint_NestedFile(t *testing.T) {
 
 // TestRenderEndpoint_DifferentPageSizes tests various page sizes
 func TestRenderEndpoint_DifferentPageSizes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser render test in short mode")
+	}
 	srv, engine, ctx, cancel := setupTestServer(t)
 	defer cancel()
 	defer engine.Shutdown()
@@ -359,46 +379,6 @@ func TestRenderEndpoint_DifferentPageSizes(t *testing.T) {
 
 			assert.Equal(t, http.StatusOK, w.Code)
 			assert.Equal(t, "application/pdf", w.Header().Get("Content-Type"))
-			time.Sleep(50 * time.Millisecond)
-		})
-	}
-	_ = ctx
-}
-
-// TestRenderEndpoint_BooleanParsing tests various boolean value formats
-func TestRenderEndpoint_BooleanParsing(t *testing.T) {
-	srv, engine, ctx, cancel := setupTestServer(t)
-	defer cancel()
-	defer engine.Shutdown()
-
-	testCases := []struct {
-		name     string
-		value    string
-		expected int
-	}{
-		{"true", "true", http.StatusOK},
-		{"TRUE", "TRUE", http.StatusOK},
-		{"1", "1", http.StatusOK},
-		{"false", "false", http.StatusOK},
-		{"0", "0", http.StatusOK},
-		{"invalid", "invalid", http.StatusOK}, // Falls back to default false
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			zipPath := filepath.Join("fixtures", "test.zpt")
-			req := createMultipartRequest(t, zipPath, map[string]string{
-				"script":    "test.html",
-				"page_size": "A4",
-				"margins":   "standard",
-				"landscape": tc.value,
-			})
-			req.Header.Set("X-Auth-Key", testAuthToken)
-
-			w := httptest.NewRecorder()
-			srv.Router.ServeHTTP(w, req)
-
-			assert.Equal(t, tc.expected, w.Code)
 			time.Sleep(50 * time.Millisecond)
 		})
 	}
