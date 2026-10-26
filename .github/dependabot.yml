@@ -43,7 +43,13 @@ updates:
     directory: "/test/upstream"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
     open-pull-requests-limit: 2
+    reviewers:
+      - "joao-pinheiro"
+    assignees:
+      - "joao-pinheiro"
     commit-message:
       prefix: "deps"
       include: "scope"

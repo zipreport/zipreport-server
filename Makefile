@@ -27,6 +27,7 @@ test-short:
 	$(GOTEST) -v -short -p 1 ./test/... ./internal/... ./pkg/...
 
 UPSTREAM_COMPOSE = docker compose -f test/upstream/docker-compose.yml
+UPSTREAM_BUILD ?= --build # CI pre-builds the image with a layer cache and passes UPSTREAM_BUILD=
 
 # Upstream proxy tests against a real Squid (needs Docker + openssl); see test/upstream/docker-compose.yml
 test-upstream:
@@ -35,7 +36,7 @@ test-upstream:
 	      -addext "subjectAltName=DNS:origin.test" \
 	      -keyout test/upstream/certs/origin.key -out test/upstream/certs/origin.crt 2>/dev/null
 	chmod 644 test/upstream/certs/origin.key
-	$(UPSTREAM_COMPOSE) run --rm --build tests; rc=$$?; $(UPSTREAM_COMPOSE) --profile tests down -v; exit $$rc
+	$(UPSTREAM_COMPOSE) run --rm $(UPSTREAM_BUILD) tests; rc=$$?; $(UPSTREAM_COMPOSE) --profile tests down -v; exit $$rc
 
 test-fixtures:
 	cd test && ./generate_fixtures.sh

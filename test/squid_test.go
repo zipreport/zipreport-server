@@ -29,6 +29,7 @@ const (
 	squidIP      = "203.0.113.2"
 	originHost   = "origin.test"
 	originIP     = "203.0.113.10"
+	localOnly    = "local-only.test" // origin's address, known to the local lookup seam only: Squid cannot resolve it
 	squidUser    = "zipreport"       // test/upstream/htpasswd
 	squidPass    = "squid-test-only" // test-only credential
 	squidCertPEM = "upstream/certs/origin.crt"
@@ -52,7 +53,7 @@ func squidURL(userinfo string) string {
 // by the lookup seam: squid.test always, origin.test only when resolveOrigin is set.
 func startSquidProxy(t *testing.T, userinfo, resolve string, resolveOrigin bool, extra map[string][]string) *proxyEnv {
 	t.Helper()
-	lookup := map[string][]string{squidHost: {squidIP}}
+	lookup := map[string][]string{squidHost: {squidIP}, localOnly: {originIP}}
 	if resolveOrigin {
 		lookup[originHost] = []string{originIP}
 	}
@@ -85,7 +86,7 @@ func originTLS(t *testing.T) *tls.Config {
 	return &tls.Config{RootCAs: pool, ServerName: originHost, MinVersion: tls.VersionTLS12}
 }
 
-// connectTLSGet opens a CONNECT tunnel through env to target, speaks TLS to the origin inside it and GETs /host.
+// connectTLSGet opens a CONNECT tunnel through env to target, speaks TLS to origin.test inside it and GETs /host.
 func connectTLSGet(t *testing.T, env *proxyEnv, target string) (int, string) {
 	t.Helper()
 	c, _, code := rawConnect(t, env.addr, target, "")
@@ -124,7 +125,8 @@ func TestSquid_OriginRefusesDirect(t *testing.T) {
 func TestSquid_LocalModeConnect(t *testing.T) {
 	requireSquid(t)
 	env := startSquidProxy(t, squidUser+":"+squidPass, "local", true, nil)
-	code, body := connectTLSGet(t, env, originHost+":443")
+	// Squid cannot resolve local-only.test: success proves the CONNECT named the vetted IP
+	code, body := connectTLSGet(t, env, localOnly+":443")
 	require.Equal(t, http.StatusOK, code)
 	assert.Equal(t, originHost, body)
 	n, _ := env.proxy.UpstreamErrors()
@@ -134,10 +136,10 @@ func TestSquid_LocalModeConnect(t *testing.T) {
 func TestSquid_LocalModePlainHTTP(t *testing.T) {
 	requireSquid(t)
 	env := startSquidProxy(t, squidUser+":"+squidPass, "local", true, nil)
-	// rides CONNECT 203.0.113.10:80 through Squid; the origin must still see the page's Host
-	code, body := getBody(t, env, "http://"+originHost+"/host")
+	// rides CONNECT 203.0.113.10:80 through Squid (which cannot resolve the name); the origin still sees the page's Host
+	code, body := getBody(t, env, "http://"+localOnly+"/host")
 	require.Equal(t, http.StatusOK, code)
-	assert.Equal(t, originHost, body)
+	assert.Equal(t, localOnly, body)
 }
 
 func TestSquid_LocalModeRefusesUnresolvable(t *testing.T) {
@@ -230,22 +232,23 @@ func TestSquid_RenderThroughUpstream(t *testing.T) {
 			defer engine.Shutdown()
 			up := mkUpstream(t, squidURL(squidUser+":"+squidPass), resolve)
 			engine.SetEgressPolicy(egress.Policy{Upstream: up})
-			lookup := map[string][]string{squidHost: {squidIP}}
-			if resolve == "local" {
-				lookup[originHost] = []string{originIP}
-			}
+			lookup := map[string][]string{squidHost: {squidIP}, localOnly: {originIP}}
 			engine.SetEgressLookup(mapLookup(lookup))
 
+			host := originHost // by name: only Squid resolves it
+			if resolve == "local" {
+				host = localOnly // only the local lookup resolves it: proves the tunnel named the vetted IP
+			}
 			index := `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>
 <div id="marker">MISSING</div>
-<script src="http://origin.test/marker.js"></script>
+<script src="http://` + host + `/marker.js"></script>
 </body></html>`
 			result := egressRenderJob(t, engine, map[string][]byte{"index.html": []byte(index)})
 			require.NotNil(t, result)
 			require.True(t, result.Success, "render failed: %v", result.Error)
 			assert.True(t, pdfHasText(result.Output, "SQUID-MARKER-OK"), "marker.js must load through Squid")
 			for _, b := range result.BlockedSamples { // Chrome's own background requests may be refused; the origin must not be
-				assert.NotContains(t, b, originHost)
+				assert.NotContains(t, b, host)
 			}
 		})
 	}
