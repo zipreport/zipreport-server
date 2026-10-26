@@ -24,7 +24,7 @@ Version 3.0.0 has breaking changes. The full list, with what to change, is in th
    it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as 3.0.0 is
    released.
 2. **HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored). All of a
-   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining; see `zipReport.upstreamProxy` from the next release), so deployments that depend
+   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining; see `zipReport.upstreamProxy` from 3.1.0), so deployments that depend
    on an outbound proxy lose external assets (CDN fonts, scripts, images). Loopback, private and link-local destinations are
    blocked unless allowed with `zipReport.egressAllow`. A Chrome started with `--proxy-server`, `--proxy-pac-url` or
    `--no-proxy-server` is refused.
@@ -120,8 +120,9 @@ ephemeral HTTP servers on localhost as part of the rendering process.
   default (`resolve: "local"`), so the rules above still hold; destinations admitted only by `egressAllow` stay direct.
   `resolve: "upstream"` hands the proxy host names instead and moves the security boundary to the upstream proxy: it
   needs destination ACLs there and must never be used with a proxy sharing this server's network namespace.
-- Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy; they are refused
-  and counted in the "blocked network requests" warning logged per job.
+- Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy and follow the same
+  rules: refused, and counted in the "blocked network requests" warning logged per job, when the name does not resolve
+  or resolves to a non-public address; otherwise they go out (through `zipReport.upstreamProxy` when one is set).
 - Residual risks of the egress proxy:
   - **WebRTC: pages can send STUN binding requests over UDP to arbitrary host:port, including internal addresses,
     outside the egress proxy (Chrome 156 ignores --force-webrtc-ip-handling-policy here). Only a network-level egress
@@ -243,6 +244,9 @@ The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, wh
 export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"
 docker run -p 6543:6543 -e ZIPREPORT_API_KEY ghcr.io/zipreport/zipreport-server:3.0.0
 ```
+
+Likewise `ZIPREPORT_UPSTREAM_PROXY` overrides `zipReport.upstreamProxy.url`, so an upstream proxy password can stay out
+of the config file.
 
 Example:
 
