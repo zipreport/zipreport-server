@@ -178,7 +178,7 @@ func (p *Proxy) Start() (string, error) {
 		}
 		// by-name routes: absolute-form request to the upstream, which resolves the name
 		p.upstreamTransport = &http.Transport{
-			Proxy: http.ProxyURL(up.URL), // never ProxyFromEnvironment
+			Proxy: http.ProxyURL(up.URL), // never the process environment
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return p.dialUpstreamProxyRaw(ctx)
 			},
