@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -111,6 +113,9 @@ type proxyOpts struct {
 	ifaces    []net.Addr
 	ownDial   string
 	idle      time.Duration
+
+	upstream    *egress.Upstream
+	upstreamTLS *tls.Config
 }
 
 func ipnet(t *testing.T, cidr string) net.Addr {
@@ -147,7 +152,11 @@ func startProxy(t *testing.T, o proxyOpts) *proxyEnv {
 	if ownDial == "" {
 		ownDial = "127.0.0.1:" + strconv.Itoa(env.ownPort)
 	}
+	if o.upstream != nil {
+		o.policy.Upstream = o.upstream
+	}
 	p := egress.New("localhost:"+strconv.Itoa(env.ownPort), ownDial, o.poolFirst, o.poolCount, o.policy)
+	p.UpstreamTLS = o.upstreamTLS
 	p.Lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		env.lookups.Add(1)
 		ips, ok := o.lookup[host]
@@ -799,4 +808,682 @@ func TestRender_FailsClosedWhenContextBypassesProxy(t *testing.T) {
 	require.Error(t, result.Error)
 	assert.Contains(t, result.Error.Error(), "did not pass through the egress proxy")
 	assert.Greater(t, seen.Load(), int32(0), "control: the page must have loaded through the bypass proxy")
+}
+
+// --- upstream proxy chaining ---
+
+// backend records the Host and request URI of every request and answers "backend".
+type backend struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen []string // "host uri"
+}
+
+func newBackend(t *testing.T) *backend {
+	t.Helper()
+	b := &backend{}
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		b.seen = append(b.seen, r.Host+" "+r.RequestURI)
+		b.mu.Unlock()
+		_, _ = w.Write([]byte("backend"))
+	}))
+	t.Cleanup(b.srv.Close)
+	return b
+}
+
+func (b *backend) requests() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.seen...)
+}
+
+type upReq struct {
+	method string
+	target string // second token of the request line: ip:port / host:port for CONNECT, the absolute URL otherwise
+	hosts  []string
+	auths  []string
+}
+
+// fakeUpstream is an in-process HTTP proxy. It reads requests raw: http.ReadRequest would rewrite Host on
+// absolute-form requests and hide what was actually sent.
+type fakeUpstream struct {
+	ln      net.Listener
+	port    int
+	conns   atomic.Int32
+	mu      sync.Mutex
+	reqs    []upReq
+	refuse  map[string]bool // CONNECT target -> 403
+	authAll bool            // 407 to everything
+	banner  string          // written in the same write as the CONNECT 200
+	backend string          // host:port every CONNECT is spliced to
+}
+
+type fakeUpstreamOpts struct {
+	refuse  map[string]bool
+	authAll bool
+	banner  string
+	tls     *tls.Config
+}
+
+func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	f := &fakeUpstream{
+		port: l.Addr().(*net.TCPAddr).Port, refuse: o.refuse, authAll: o.authAll, banner: o.banner,
+		backend: b.srv.Listener.Addr().String(),
+	}
+	f.ln = l
+	if o.tls != nil {
+		f.ln = tls.NewListener(l, o.tls)
+	}
+	t.Cleanup(func() { _ = f.ln.Close() })
+	go func() {
+		for {
+			c, err := f.ln.Accept()
+			if err != nil {
+				return
+			}
+			f.conns.Add(1)
+			go f.serve(c)
+		}
+	}()
+	return f
+}
+
+func (f *fakeUpstream) serve(c net.Conn) {
+	defer func() { _ = c.Close() }()
+	br := bufio.NewReader(c)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			return
+		}
+		r := upReq{method: parts[0], target: parts[1]}
+		for {
+			h, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			h = strings.TrimRight(h, "\r\n")
+			if h == "" {
+				break
+			}
+			name, val, _ := strings.Cut(h, ":")
+			val = strings.TrimSpace(val)
+			switch strings.ToLower(name) {
+			case "host":
+				r.hosts = append(r.hosts, val)
+			case "proxy-authorization":
+				r.auths = append(r.auths, val)
+			}
+		}
+		f.mu.Lock()
+		f.reqs = append(f.reqs, r)
+		f.mu.Unlock()
+
+		if f.authAll {
+			_, _ = c.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\n\r\n"))
+			return
+		}
+		if r.method == http.MethodConnect {
+			if f.refuse[r.target] {
+				_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
+				return
+			}
+			up, err := net.Dial("tcp", f.backend)
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n" + f.banner))
+			go func() { _, _ = io.Copy(up, br); _ = up.Close() }()
+			_, _ = io.Copy(c, up)
+			_ = up.Close()
+			return
+		}
+		_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nupstream"))
+	}
+}
+
+func (f *fakeUpstream) requests() []upReq {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]upReq(nil), f.reqs...)
+}
+
+func (f *fakeUpstream) targets() []string {
+	var out []string
+	for _, r := range f.requests() {
+		out = append(out, r.target)
+	}
+	return out
+}
+
+// proxyURL is the upstream's URL as the operator would configure it, with host as the name part.
+func (f *fakeUpstream) proxyURL(scheme, userinfo, host string) string {
+	return fmt.Sprintf("%s://%s%s:%d", scheme, userinfo, host, f.port)
+}
+
+// dialLog records every address that reached the generic "fake public internet" branch of the dial seam.
+type dialLog struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+func (d *dialLog) all() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.addrs...)
+}
+
+// routingDial sends the upstream's address and any other loopback address to a real dialer and records
+// everything else (fake public / private IPs) before handing out a pipe double: a direct dial is observable
+// and nothing touches the network.
+func routingDial(f *fakeUpstream, log *dialLog) egress.DialFunc {
+	var real net.Dialer
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, _ := net.SplitHostPort(addr)
+		if f != nil && port == strconv.Itoa(f.port) && (host == "127.0.0.1" || host == "127.0.0.2" || host == "203.0.113.10") {
+			return real.DialContext(ctx, network, "127.0.0.1:"+port)
+		}
+		if host == "127.0.0.1" {
+			return real.DialContext(ctx, network, addr)
+		}
+		log.mu.Lock()
+		log.addrs = append(log.addrs, addr)
+		log.mu.Unlock()
+		var sink atomic.Value
+		return pipeUpstream(&sink)(ctx, network, addr)
+	}
+}
+
+func mkUpstream(t *testing.T, rawURL, resolve string, noProxy ...string) *egress.Upstream {
+	t.Helper()
+	up, err := egress.ParseUpstream(rawURL, resolve, noProxy)
+	require.NoError(t, err)
+	require.NotNil(t, up)
+	return up
+}
+
+// tunnelGet CONNECTs to target and issues one GET inside the tunnel.
+func tunnelGet(t *testing.T, env *proxyEnv, target, host string) (int, string) {
+	t.Helper()
+	_, br, code := rawConnect(t, env.addr, target, "GET /t HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+	if code != 200 {
+		return code, ""
+	}
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func connectCode(t *testing.T, env *proxyEnv, target string) int {
+	t.Helper()
+	_, _, code := rawConnect(t, env.addr, target, "")
+	return code
+}
+
+var byNameLookup = map[string][]string{
+	"example.com": {"203.0.113.10"},
+	"pub.test":    {"8.8.8.8"},
+	"intra.test":  {"10.0.0.5"},
+}
+
+type upstreamHarness struct {
+	env  *proxyEnv
+	fu   *fakeUpstream
+	be   *backend
+	dial *dialLog
+}
+
+// startLocal starts a proxy chained, in local mode, to a fake upstream at 127.0.0.1.
+func startLocal(t *testing.T, fo fakeUpstreamOpts, lookup map[string][]string, policy egress.Policy, noProxy ...string) *upstreamHarness {
+	t.Helper()
+	return startLocalAt(t, "127.0.0.1", fo, lookup, policy, noProxy...)
+}
+
+// startLocalAt is startLocal with the upstream addressed at host (a loopback address).
+func startLocalAt(t *testing.T, host string, fo fakeUpstreamOpts, lookup map[string][]string, policy egress.Policy, noProxy ...string) *upstreamHarness {
+	t.Helper()
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fo)
+	log := &dialLog{}
+	policy.Upstream = mkUpstream(t, fu.proxyURL("http", "", host), "local", noProxy...)
+	env := startProxy(t, proxyOpts{policy: policy, lookup: lookup, dial: routingDial(fu, log)})
+	return &upstreamHarness{env: env, fu: fu, be: be, dial: log}
+}
+
+// startByName starts a proxy chained, by name, to a fake upstream named example.com (203.0.113.10).
+func startByName(t *testing.T, fo fakeUpstreamOpts, lookup map[string][]string, policy egress.Policy, noProxy ...string) *upstreamHarness {
+	t.Helper()
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fo)
+	log := &dialLog{}
+	policy.Upstream = mkUpstream(t, fu.proxyURL("http", "", "example.com"), "upstream", noProxy...)
+	env := startProxy(t, proxyOpts{policy: policy, lookup: lookup, dial: routingDial(fu, log)})
+	return &upstreamHarness{env: env, fu: fu, be: be, dial: log}
+}
+
+func TestEgressUpstream_ConnectSendsVettedIP(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{}, map[string][]string{"pub.test": {"8.8.8.8"}}, egress.Policy{})
+	code, body := tunnelGet(t, h.env, "pub.test:443", "pub.test")
+	require.Equal(t, 200, code)
+	assert.Equal(t, "backend", body)
+	assert.Equal(t, []string{"8.8.8.8:443"}, h.fu.targets())
+	assert.Empty(t, h.dial.all(), "no direct dial of the public address")
+}
+
+func TestEgressUpstream_ByNameSendsHostName(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+	require.Equal(t, 200, connectCode(t, h.env, "pub.test:443"))
+	assert.Equal(t, []string{"pub.test:443"}, h.fu.targets())
+	assert.Empty(t, h.dial.all())
+}
+
+func TestEgressUpstream_ByNameUnresolvableForwardedByName(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+	require.Equal(t, 200, connectCode(t, h.env, "only-proxy.test:443"))
+	assert.Equal(t, []string{"only-proxy.test:443"}, h.fu.targets())
+
+	t.Run("exact_noproxy", func(t *testing.T) {
+		h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{}, "only-proxy.test:443")
+		assert.Equal(t, 403, connectCode(t, h.env, "only-proxy.test:443"))
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+}
+
+func TestEgressUpstream_ByNameStillRefusesPrivate(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+	assert.Equal(t, 403, connectCode(t, h.env, "intra.test:443"))
+	assert.Equal(t, int32(0), h.fu.conns.Load())
+	n, _ := h.env.proxy.Blocked()
+	assert.Equal(t, 1, n)
+}
+
+func TestEgressUpstream_LocalModeRefusesUnresolvable(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{}, map[string][]string{}, egress.Policy{})
+	assert.Equal(t, 403, connectCode(t, h.env, "only-proxy.test:443"))
+	assert.Equal(t, int32(0), h.fu.conns.Load())
+}
+
+func TestEgressUpstream_RefusesLoopbackNamesAndAddrs(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+	for _, target := range []string{
+		"localhost:9", "localhost.:9", "LOCALHOST:9", "x.localhost:9", "x.localhost.:9", "localhost.localdomain:9",
+		"localhost4:9", "localhost6:9", "127.0.0.1:9", "[::1]:9", "[::ffff:127.0.0.1]:9",
+	} {
+		assert.Equal(t, 403, connectCode(t, h.env, target), target)
+	}
+	assert.Equal(t, int32(0), h.fu.conns.Load())
+}
+
+func TestEgressUpstream_ByNameRefusesHardDeniedPorts(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{ReservedPorts: []int{6543}})
+	assert.Equal(t, 403, connectCode(t, h.env, "pub.test:6543"))
+	assert.Equal(t, 403, connectCode(t, h.env, "only-proxy.test:6543"))
+	assert.Equal(t, int32(0), h.fu.conns.Load())
+	assert.Equal(t, 200, connectCode(t, h.env, "pub.test:443"), "control")
+	assert.Equal(t, int32(1), h.fu.conns.Load())
+}
+
+func TestEgressUpstream_UpstreamAddressRefused(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		h := startLocal(t, fakeUpstreamOpts{}, nil, egress.Policy{Allow: []egress.Rule{mustRule(t, "127.0.0.0/8")}})
+		assert.Equal(t, 403, connectCode(t, h.env, fmt.Sprintf("127.0.0.1:%d", h.fu.port)))
+		assert.Equal(t, 403, connectCode(t, h.env, fmt.Sprintf("127.0.0.1:%d", h.fu.port+1)))
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+		assert.Empty(t, h.dial.all())
+	})
+	t.Run("by_name", func(t *testing.T) {
+		h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{Allow: []egress.Rule{mustRule(t, "203.0.113.0/24")}})
+		for _, target := range []string{
+			fmt.Sprintf("203.0.113.10:%d", h.fu.port), "203.0.113.10:22",
+			fmt.Sprintf("example.com:%d", h.fu.port), "example.com.:443", "EXAMPLE.com:443",
+		} {
+			assert.Equal(t, 403, connectCode(t, h.env, target), target)
+		}
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+		assert.Empty(t, h.dial.all())
+	})
+}
+
+func TestEgressUpstream_EgressAllowedStaysDirect(t *testing.T) {
+	t.Run("local_loopback", func(t *testing.T) {
+		_, hits, port := newDecoy(t)
+		// the upstream sits at 127.0.0.2: its own address is refused on every port, so the allowed loopback
+		// destination must be a different address
+		h := startLocalAt(t, "127.0.0.2", fakeUpstreamOpts{}, nil, egress.Policy{Allow: []egress.Rule{mustRule(t, fmt.Sprintf("127.0.0.1:%d", port))}})
+		assert.Equal(t, 200, status(t, h.env.client, fmt.Sprintf("http://127.0.0.1:%d/", port)))
+		assert.Equal(t, int32(1), hits.Load())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+	t.Run("local_private", func(t *testing.T) {
+		h := startLocal(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{Allow: []egress.Rule{mustRule(t, "10.0.0.0/8")}})
+		assert.Equal(t, 200, connectCode(t, h.env, "intra.test:443"))
+		assert.Equal(t, []string{"10.0.0.5:443"}, h.dial.all())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+	t.Run("by_name_exact", func(t *testing.T) {
+		_, hits, port := newDecoy(t)
+		lookup := map[string][]string{"example.com": {"203.0.113.10"}, "localhost": {"127.0.0.1"}}
+		h := startByName(t, fakeUpstreamOpts{}, lookup, egress.Policy{Allow: []egress.Rule{mustRule(t, fmt.Sprintf("localhost:%d", port))}})
+		assert.Equal(t, 200, status(t, h.env.client, fmt.Sprintf("http://localhost:%d/", port)))
+		assert.Equal(t, int32(1), hits.Load())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+	t.Run("by_name_cidr", func(t *testing.T) {
+		h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{Allow: []egress.Rule{mustRule(t, "10.0.0.0/8")}})
+		assert.Equal(t, 200, connectCode(t, h.env, "intra.test:443"))
+		assert.Equal(t, []string{"10.0.0.5:443"}, h.dial.all())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+}
+
+func TestEgressUpstream_ForwardLocalModeTunnels(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{}, map[string][]string{"pub.test": {"8.8.8.8"}}, egress.Policy{})
+	resp, err := h.env.client.Get("http://pub.test/x?q=1")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "backend", string(body))
+	assert.Equal(t, []string{"8.8.8.8:80"}, h.fu.targets())
+	assert.Equal(t, []string{"pub.test /x?q=1"}, h.be.requests())
+}
+
+func TestEgressUpstream_ForwardTriesNextIP(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{refuse: map[string]bool{"8.8.8.8:80": true}},
+		map[string][]string{"pub.test": {"8.8.8.8", "8.8.4.4"}}, egress.Policy{})
+	resp, err := h.env.client.Get("http://pub.test/x")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "backend", string(body))
+	assert.Equal(t, []string{"8.8.8.8:80", "8.8.4.4:80"}, h.fu.targets())
+}
+
+func TestEgressUpstream_ForwardByNameAbsoluteForm(t *testing.T) {
+	h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+	resp, err := h.env.client.Get("http://pub.test/x")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "upstream", string(body))
+	reqs := h.fu.requests()
+	require.Len(t, reqs, 1)
+	assert.True(t, strings.HasPrefix(reqs[0].target, "http://pub.test"), reqs[0].target)
+}
+
+func TestEgressUpstream_ProxyAuthorization(t *testing.T) {
+	const want = "Basic dXNlcjpzM2NyZXQ=" // user:s3cret
+
+	t.Run("local_connect", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+		up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+		env := startProxy(t, proxyOpts{
+			policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+			dial: routingDial(fu, &dialLog{}),
+		})
+		require.Equal(t, 200, connectCode(t, env, "pub.test:443"))
+		reqs := fu.requests()
+		require.Len(t, reqs, 1)
+		assert.Equal(t, []string{want}, reqs[0].auths)
+	})
+	t.Run("by_name_forward", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+		up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "example.com"), "upstream")
+		env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: routingDial(fu, &dialLog{})})
+		req, err := http.NewRequest(http.MethodGet, "http://pub.test/x", nil)
+		require.NoError(t, err)
+		req.Header.Set("Proxy-Authorization", "Basic ZXZpbA==") // the page's own value must not reach the upstream
+		resp, err := env.client.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		reqs := fu.requests()
+		require.Len(t, reqs, 1)
+		assert.Equal(t, []string{want}, reqs[0].auths)
+	})
+}
+
+func TestEgressUpstream_AuthFailureNotRetried(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	env := startProxy(t, proxyOpts{
+		policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8", "8.8.4.4"}},
+		dial: routingDial(fu, &dialLog{}),
+	})
+	assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+	assert.Len(t, fu.requests(), 1)
+	n, last := env.proxy.UpstreamErrors()
+	assert.Equal(t, 1, n)
+	assert.True(t, strings.HasPrefix(last, "407"), last)
+	assert.NotContains(t, last, "s3cret")
+}
+
+func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	up.AuthCooldown = 300 * time.Millisecond
+	lookup := map[string][]string{"pub.test": {"8.8.8.8"}}
+	start := func() *proxyEnv {
+		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+	}
+	env1, env2 := start(), start()
+
+	assert.Equal(t, 502, connectCode(t, env1, "pub.test:443"))
+	require.Len(t, fu.requests(), 1)
+	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
+	assert.Len(t, fu.requests(), 1, "latched: the second job's proxy must not contact the upstream")
+	n, last := env2.proxy.UpstreamErrors()
+	assert.Equal(t, 1, n)
+	assert.Contains(t, last, "latched")
+
+	time.Sleep(450 * time.Millisecond)
+	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
+	assert.Len(t, fu.requests(), 2, "after the cool-down the upstream is tried again")
+}
+
+func TestEgressUpstream_NoProxyDialsDirect(t *testing.T) {
+	lookup := map[string][]string{"pub.test": {"8.8.8.8"}, "example.com": {"203.0.113.10"}}
+	t.Run("local", func(t *testing.T) {
+		h := startLocal(t, fakeUpstreamOpts{}, lookup, egress.Policy{}, "8.8.8.8/32")
+		assert.Equal(t, 200, connectCode(t, h.env, "pub.test:443"))
+		assert.Equal(t, []string{"8.8.8.8:443"}, h.dial.all())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+	t.Run("by_name", func(t *testing.T) {
+		h := startByName(t, fakeUpstreamOpts{}, lookup, egress.Policy{}, "8.8.8.8/32")
+		assert.Equal(t, 200, connectCode(t, h.env, "pub.test:443"))
+		assert.Equal(t, []string{"8.8.8.8:443"}, h.dial.all())
+		assert.Equal(t, int32(0), h.fu.conns.Load())
+	})
+}
+
+func TestEgressUpstream_RefusedTunnelTriesNextIP(t *testing.T) {
+	lookup := map[string][]string{"pub.test": {"8.8.8.8", "8.8.4.4"}}
+	h := startLocal(t, fakeUpstreamOpts{refuse: map[string]bool{"8.8.8.8:443": true}}, lookup, egress.Policy{})
+	assert.Equal(t, 200, connectCode(t, h.env, "pub.test:443"))
+	assert.Equal(t, []string{"8.8.8.8:443", "8.8.4.4:443"}, h.fu.targets())
+
+	h = startLocal(t, fakeUpstreamOpts{refuse: map[string]bool{"8.8.8.8:443": true, "8.8.4.4:443": true}}, lookup, egress.Policy{})
+	assert.Equal(t, 502, connectCode(t, h.env, "pub.test:443"))
+	n, _ := h.env.proxy.UpstreamErrors()
+	assert.Equal(t, 2, n)
+}
+
+func TestEgressUpstream_OwnOriginNeverUpstream(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{}, nil, egress.Policy{})
+	resp, err := h.env.client.Get(h.env.ownURL("/"))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "own", string(body))
+	assert.True(t, h.env.proxy.SawOwnOrigin())
+	assert.Equal(t, int32(0), h.fu.conns.Load())
+}
+
+func TestEgressUpstream_CloseEndsTunnel(t *testing.T) {
+	lookup := map[string][]string{"pub.test": {"8.8.8.8"}}
+	for _, mode := range []string{"close", "retire"} {
+		t.Run(mode, func(t *testing.T) {
+			h := startLocal(t, fakeUpstreamOpts{}, lookup, egress.Policy{})
+			c, br, code := rawConnect(t, h.env.addr, "pub.test:443", "")
+			require.Equal(t, 200, code)
+			if mode == "close" {
+				require.NoError(t, h.env.proxy.Close())
+			} else {
+				fastRetire(h.env, 1)
+				done := h.env.proxy.Retire(func(context.Context) error { return errors.New("busy") })
+				defer waitDone(t, done)
+			}
+			_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, err := br.ReadByte()
+			require.Error(t, err)
+			var ne net.Error
+			if errors.As(err, &ne) {
+				assert.False(t, ne.Timeout(), "tunnel must be cut, not time out")
+			}
+		})
+	}
+}
+
+func TestEgressUpstream_BufferedBytesAfterConnect(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{banner: "HELLO\n"}, map[string][]string{"pub.test": {"8.8.8.8"}}, egress.Policy{})
+	_, br, code := rawConnect(t, h.env.addr, "pub.test:443", "")
+	require.Equal(t, 200, code)
+	line, err := br.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, "HELLO\n", line)
+}
+
+func TestEgressUpstream_HTTPSUpstream(t *testing.T) {
+	cert := httptest.NewUnstartedServer(http.NotFoundHandler())
+	cert.StartTLS()
+	t.Cleanup(cert.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Certificate())
+	serverTLS := &tls.Config{Certificates: cert.TLS.Certificates}
+
+	t.Run("connect", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{tls: serverTLS})
+		up := mkUpstream(t, fu.proxyURL("https", "", "127.0.0.1"), "local")
+		env := startProxy(t, proxyOpts{
+			policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+			dial: routingDial(fu, &dialLog{}), upstreamTLS: &tls.Config{RootCAs: pool},
+		})
+		code, body := tunnelGet(t, env, "pub.test:443", "pub.test")
+		assert.Equal(t, 200, code)
+		assert.Equal(t, "backend", body)
+		assert.Equal(t, []string{"8.8.8.8:443"}, fu.targets())
+	})
+	t.Run("forward_by_name", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{tls: serverTLS})
+		up := mkUpstream(t, fu.proxyURL("https", "", "example.com"), "upstream")
+		env := startProxy(t, proxyOpts{
+			policy: egress.Policy{Upstream: up}, lookup: byNameLookup,
+			dial: routingDial(fu, &dialLog{}), upstreamTLS: &tls.Config{RootCAs: pool},
+		})
+		resp, err := env.client.Get("http://pub.test/x")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, "upstream", string(body))
+	})
+	t.Run("untrusted", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{tls: serverTLS})
+		up := mkUpstream(t, fu.proxyURL("https", "", "127.0.0.1"), "local")
+		env := startProxy(t, proxyOpts{
+			policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}},
+			dial: routingDial(fu, &dialLog{}),
+		})
+		assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+	})
+}
+
+func TestEgressUpstream_ByNameLocalUpstreamRejected(t *testing.T) {
+	up := mkUpstream(t, "http://proxy.test:4000", "upstream")
+	p := egress.New("localhost:1", "127.0.0.1:1", 1, 1, egress.Policy{Upstream: up})
+	p.Lookup = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	p.InterfaceAddrs = func() ([]net.Addr, error) { return nil, nil }
+	_, err := p.Start()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "on this host")
+}
+
+func TestEgressUpstream_StartFailsWhenUpstreamUnresolvable(t *testing.T) {
+	up := mkUpstream(t, "http://nowhere.test:3128", "local")
+	p := egress.New("localhost:1", "127.0.0.1:1", 1, 1, egress.Policy{Upstream: up})
+	p.Lookup = func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no such host") }
+	p.InterfaceAddrs = func() ([]net.Addr, error) { return nil, nil }
+	_, err := p.Start()
+	require.Error(t, err)
+}
+
+func TestEgressParseUpstream(t *testing.T) {
+	for _, c := range []struct {
+		url, resolve string
+		noProxy      []string
+	}{
+		{"http://proxy:3128", "", nil},
+		{"https://proxy.corp:8443", "local", nil},
+		{"http://user:pw@proxy.corp:3128/", "upstream", nil},
+		{"http://proxy:3128", "local", []string{"8.8.8.0/24", "cdn.example.com:443"}},
+		{"", "", nil},
+		{"", "local", nil},
+	} {
+		up, err := egress.ParseUpstream(c.url, c.resolve, c.noProxy)
+		assert.NoError(t, err, c.url)
+		if c.url == "" {
+			assert.Nil(t, up)
+		} else {
+			require.NotNil(t, up)
+			assert.Equal(t, c.resolve == "upstream", up.ByName)
+		}
+	}
+
+	bad := []struct {
+		url, resolve string
+		noProxy      []string
+	}{
+		{"socks5://h:1080", "", nil},
+		{"tok3n:s3cret@proxy:3128", "", nil},
+		{"http://h", "", nil},
+		{"http://:3128", "", nil},
+		{"http://h:0", "", nil},
+		{"http://h:3128/p", "", nil},
+		{"http://h:3128?x=1", "", nil},
+		{"http://h:3128", "dns", nil},
+		{"http://h:3128", "", []string{"bad"}},
+		{"http://h:3128", "", []string{"10.0.0.0/8"}},
+		{"", "", []string{"8.8.8.0/24"}},
+		{"", "upstream", nil},
+		{"http://localhost:3128", "upstream", nil},
+		{"http://LOCALHOST.:3128", "upstream", nil},
+		{"http://127.0.0.1:3128", "upstream", nil},
+		{"http://tok3n:s3cret@host:badport", "", nil},
+	}
+	for _, c := range bad {
+		_, err := egress.ParseUpstream(c.url, c.resolve, c.noProxy)
+		if assert.Error(t, err, "%q %q", c.url, c.resolve) {
+			assert.NotContains(t, err.Error(), "s3cret")
+			assert.NotContains(t, err.Error(), "tok3n")
+		}
+	}
 }
