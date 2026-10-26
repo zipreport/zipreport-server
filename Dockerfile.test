@@ -45,4 +45,4 @@ RUN go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && 
 # Mark as Docker environment for --no-sandbox detection
 RUN touch /.dockerenv
 
-CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/...", "./internal/..."]
+CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/...", "./internal/...", "./pkg/..."]

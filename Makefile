@@ -9,7 +9,7 @@ GOVULNCHECK_VERSION ?= 1.9.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS = -ldflags="-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build test test-integration test-short test-fixtures clean fmt lint docker certificate
+.PHONY: all build test test-integration test-short test-upstream test-fixtures clean fmt lint docker certificate
 
 all: build
 
@@ -21,10 +21,21 @@ test:
 	$(GOTEST) -v -p 1 ./test/... ./internal/...
 
 test-integration:
-	$(GOTEST) -v -p 1 -timeout=10m ./test/... ./internal/...
+	$(GOTEST) -v -p 1 -timeout=10m ./test/... ./internal/... ./pkg/...
 
 test-short:
-	$(GOTEST) -v -short -p 1 ./test/... ./internal/...
+	$(GOTEST) -v -short -p 1 ./test/... ./internal/... ./pkg/...
+
+UPSTREAM_COMPOSE = docker compose -f test/upstream/docker-compose.yml
+
+# Upstream proxy tests against a real Squid (needs Docker + openssl); see test/upstream/docker-compose.yml
+test-upstream:
+	mkdir -p test/upstream/certs
+	openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj "/CN=origin.test" \
+	      -addext "subjectAltName=DNS:origin.test" \
+	      -keyout test/upstream/certs/origin.key -out test/upstream/certs/origin.crt 2>/dev/null
+	chmod 644 test/upstream/certs/origin.key
+	$(UPSTREAM_COMPOSE) run --rm --build tests; rc=$$?; $(UPSTREAM_COMPOSE) --profile tests down -v; exit $$rc
 
 test-fixtures:
 	cd test && ./generate_fixtures.sh
