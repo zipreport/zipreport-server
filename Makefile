@@ -58,5 +58,6 @@ docker:
 	docker build --build-arg VERSION=$(VERSION) -t zipreport-server:$(VERSION) .
 
 certificate:
+	mkdir -p cert
 	openssl req -x509 -nodes -newkey rsa:4096 -keyout cert/server.key -out cert/server.crt -days 3650 \
 	      -subj "/C=PT/ST=Lisbon/L=Lisbon/O=ZipReport/OU=RD/CN=zipreport-server.local"

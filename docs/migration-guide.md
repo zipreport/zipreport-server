@@ -363,7 +363,7 @@ make test-integration
 
 **What's New:**
 - Complete configuration reference in `docs/configuration.md`
-- All 70+ configuration options documented
+- All 60+ configuration options documented
 - Examples for common scenarios
 
 **How to Use:**
