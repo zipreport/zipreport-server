@@ -62,7 +62,7 @@ Tests use `-p 1` (sequential execution) to avoid port conflicts between test ins
 - **`pkg/zpt/`** — `ZptReader` (ZIP reader wrapper), `ZptServer` (ephemeral HTTP server with path traversal protection),
   `ServerPool` (concurrent slot management)
 - **`pkg/egress/`** — Per-job egress proxy and policy: blocks loopback/private/link-local destinations unless allowed by
-  `zipReport.egressAllow`; dials directly (no upstream proxy chaining)
+  `zipReport.egressAllow`; dials directly, or chains public destinations through `zipReport.upstreamProxy`
 - **`pkg/monitor/`** — Prometheus metrics definitions (counters, gauges, histogram)
 - **`pkg/metrics/`** — Prometheus HTTP server configuration
 - **`pkg/browser/`** — Chrome for Testing downloader (pinned version, all platforms; replaces rod's built-in downloader)
@@ -83,7 +83,8 @@ Key runtime settings in `zipReport`: `concurrency` (pool size), `baseHttpPort` (
 `enableConsoleLogging`, `enableMetrics`.
 
 **Environment Variable Override**: `ZIPREPORT_API_KEY` overrides `apiServer.authTokenSecret`, useful for Docker
-deployments without a config file mount.
+deployments without a config file mount. `ZIPREPORT_UPSTREAM_PROXY` overrides `zipReport.upstreamProxy.url` (keeps the
+proxy password out of the file).
 
 ### Test Structure
 
