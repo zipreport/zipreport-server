@@ -14,6 +14,7 @@ and returns the PDF output.
 make build              # Build zipreport-server and browser-update binaries to bin/
 make test-short         # Run tests that don't require Chrome (fast, CI-safe)
 make test-integration   # Run full test suite including browser-based tests (requires Chrome)
+make test-upstream      # TestSquid_* against a real Squid (test/upstream/docker-compose.yml; needs Docker, runs in a container)
 make test-fixtures      # Regenerate .zpt fixtures from source HTML files
 make fmt                # Format code
 make lint               # Run golangci-lint and govulncheck (requires golangci-lint 2.15.0 built with go >= go.mod, govulncheck 1.9.0; the target checks and prints install commands)
@@ -95,7 +96,10 @@ deployments without a config file mount.
 - `test/helpers_test.go` — PDF parsing utilities (page count, text search, validity check)
 - `test/pdf_geometry_test.go` — Page size, margin and orientation mapping; MediaBox of rendered PDFs
 - `test/listener_bind_test.go` — Report server and egress proxy bind loopback only
+- `test/egress_test.go` — Egress proxy, including `TestEgressUpstream_*` against an in-process fake upstream proxy
+- `test/squid_test.go` — `TestSquid_*`: upstream chaining against a real Squid; skip unless run by `make test-upstream`
 - `internal/apiserver/render_job_test.go` — In-package: `buildRenderJob` parameter clamps and bool parsing
+- `pkg/egress/upstream_test.go` — In-package: `plan` routing table, upstream helpers, auth latch, `Start` checks
 - `test/fixtures/` — `.zpt` files and their HTML sources
 
 Tests share a single `monitor.Metrics` instance (avoids Prometheus re-registration panics) and use an incrementing port

@@ -286,10 +286,23 @@ jobs:
           env -u CI -u GITHUB_ACTIONS go test -v -p 1 -count=1 \
             -run '^(TestE2E_PDFGeometry|TestE2E_JSEventMode|TestRender_EgressBlocksInternal|TestRender_FailsClosedWhenContextBypassesProxy|TestJobIsolation_StorageNotShared|TestJobIsolation_ContextsDisposed|TestRenderJob_BeforeUnloadBusyPageReleasesSlot|TestRenderJob_BrowserCrashLeavesNoProxy|TestEngine_DedicatedDiscardRemovesProfile)$' ./test/...
 
+  test-upstream:
+    name: Test (upstream proxy, Squid)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Upstream proxy tests against a real Squid
+        timeout-minutes: 20
+        run: make test-upstream
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-24.04
-    needs: [ test, test-dedicated, lint, build, govulncheck, build-docker, e2e-docker ]
+    needs: [ test, test-dedicated, test-upstream, lint, build, govulncheck, build-docker, e2e-docker ]
     if: always()
     steps:
       - name: Verify all jobs passed

@@ -455,6 +455,9 @@ make test-short
 # Full suite, including browser-based tests (needs a Chrome that can start; same as `make test`)
 make test-integration
 
+# Upstream proxy tests against a real Squid in Docker (needs Docker and openssl; runs in a container)
+make test-upstream
+
 # Regenerate the .zpt test fixtures from their HTML sources
 make test-fixtures
 ```
