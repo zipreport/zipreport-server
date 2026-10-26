@@ -1135,8 +1135,9 @@ func TestEgressUpstream_ByNameRefusesHardDeniedPorts(t *testing.T) {
 
 func TestEgressUpstream_UpstreamAddressRefused(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
-		_, hits, otherPort := newDecoy(t) // a live server on another port of the upstream's address
-		h := startLocal(t, fakeUpstreamOpts{}, nil, egress.Policy{Allow: []egress.Rule{mustRule(t, "127.0.0.0/8")}})
+		// the upstream is addressed by name so only the address check, not the name check, can refuse 127.0.0.1
+		_, hits, otherPort := newDecoy(t) // a live server on another port of the upstream address
+		h := startLocalAt(t, "proxy.test", fakeUpstreamOpts{}, map[string][]string{"proxy.test": {"127.0.0.1"}}, egress.Policy{Allow: []egress.Rule{mustRule(t, "127.0.0.0/8")}})
 		assert.Equal(t, 403, connectCode(t, h.env, fmt.Sprintf("127.0.0.1:%d", h.fu.port)))
 		assert.Equal(t, 403, connectCode(t, h.env, fmt.Sprintf("127.0.0.1:%d", otherPort)))
 		assert.Equal(t, int32(0), hits.Load())
