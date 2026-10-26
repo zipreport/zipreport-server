@@ -199,11 +199,11 @@ func (c *Config) Validate() error {
 		}
 	}
 	if up, _ := egress.ParseUpstream(c.ZipReport.UpstreamProxy.URL, c.ZipReport.UpstreamProxy.Resolve, c.ZipReport.UpstreamProxy.NoProxy); up != nil {
-		isLoopback := egress.LoopbackName(up.Hostname())
-		if ip, err := netip.ParseAddr(up.Hostname()); err == nil && ip.Unmap().IsLoopback() {
-			isLoopback = true
+		onHost := egress.LoopbackName(up.Hostname())
+		if ip, err := netip.ParseAddr(up.Hostname()); err == nil && egress.OnThisHost(ip, nil) {
+			onHost = true
 		}
-		if isLoopback {
+		if onHost {
 			port, _ := strconv.Atoi(up.URL.Port())
 			what := ""
 			switch {

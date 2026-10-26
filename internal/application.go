@@ -87,12 +87,7 @@ func (z *ZipReport) Build(appName string) {
 	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
 	z.AbortFatal(ConfigureEngine(zptEngine, cfg))
 	if up := zptEngine.EgressPolicy().Upstream; up != nil {
-		resolve := "local"
-		if up.ByName {
-			resolve = "upstream"
-		}
-		// never log up.URL: it may carry userinfo
-		z.logger.Info("egress upstream proxy enabled", log.KV{"upstream": up.Endpoint(), "resolve": resolve})
+		z.logger.Info("egress upstream proxy enabled", upstreamLogKV(up))
 		if up.ByName {
 			z.checkByNameUpstream(up)
 		}
@@ -157,6 +152,26 @@ func (z *ZipReport) Start() {
 	)
 }
 
+// upstreamLogKV is the only description of the upstream that is logged: never its URL, which may carry userinfo.
+func upstreamLogKV(up *egress.Upstream) log.KV {
+	resolve := "local"
+	if up.ByName {
+		resolve = "upstream"
+	}
+	return log.KV{"upstream": up.Endpoint(), "resolve": resolve}
+}
+
+// upstreamOnThisHost reports whether any of the upstream's addresses is loopback, unspecified or an interface address.
+func upstreamOnThisHost(addrs []netip.Addr, ifaces []net.Addr) bool {
+	local := egress.InterfaceIPs(ifaces)
+	for _, a := range addrs {
+		if egress.OnThisHost(a, local) {
+			return true
+		}
+	}
+	return false
+}
+
 // checkByNameUpstream refuses resolve "upstream" with an upstream on this host and warns about its trade-off.
 func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -167,19 +182,9 @@ func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
 		z.logger.Warn("cannot resolve the upstream proxy at startup; each job will check it")
 		return
 	}
-	var local []netip.Addr
-	for _, a := range ifaces {
-		if ipn, ok := a.(*net.IPNet); ok {
-			if na, ok := netip.AddrFromSlice(ipn.IP); ok {
-				local = append(local, na)
-			}
-		}
-	}
-	for _, a := range addrs {
-		if egress.OnThisHost(a, local) {
-			z.AbortFatal(errors.New("zipReport.upstreamProxy: resolve \"upstream\" cannot be used with an upstream proxy on this host"))
-			return
-		}
+	if upstreamOnThisHost(addrs, ifaces) {
+		z.AbortFatal(errors.New("zipReport.upstreamProxy: resolve \"upstream\" cannot be used with an upstream proxy on this host"))
+		return
 	}
 	z.logger.Warn("zipReport.upstreamProxy.resolve is \"upstream\": the upstream proxy decides where host names go, so a rendered page can reach anything the upstream can reach; configure destination ACLs on the upstream and never use this mode with an upstream that shares this server's network namespace")
 }

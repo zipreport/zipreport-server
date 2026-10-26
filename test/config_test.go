@@ -343,6 +343,35 @@ func TestConfig_UpstreamProxyValidation(t *testing.T) {
 
 	cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://proxy.test:%d", cfg.Prometheus.Port)
 	assert.NoError(t, cfg.Validate(), "a remote upstream may use any port")
+
+	cfg = configWithSecret(strongSecret)
+	cfg.ZipReport.Concurrency = 4
+	first, last := cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+3
+	for _, c := range []struct {
+		host    string
+		port    int
+		metrics bool
+		collide bool
+	}{
+		{"127.0.0.1", first, false, true},
+		{"127.0.0.1", last, false, true},
+		{"127.0.0.1", last + 1, false, false},
+		{"127.0.0.1", first - 1, false, false},
+		{"[::1]", cfg.ApiServer.Port, false, true},
+		{"0.0.0.0", cfg.ApiServer.Port, false, true},
+		{"127.0.0.2", cfg.ApiServer.Port, false, true},
+		{"127.0.0.1", cfg.Prometheus.Port, false, false},
+		{"127.0.0.1", cfg.Prometheus.Port, true, true},
+	} {
+		cfg.ZipReport.EnableMetrics = c.metrics
+		cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://%s:%d", c.host, c.port)
+		err := cfg.Validate()
+		if c.collide {
+			assert.ErrorContains(t, err, "collides", cfg.ZipReport.UpstreamProxy.URL)
+		} else {
+			assert.NoError(t, err, cfg.ZipReport.UpstreamProxy.URL)
+		}
+	}
 }
 
 func TestConfig_UpstreamProxyEnvOverride(t *testing.T) {
@@ -354,6 +383,7 @@ func TestConfig_UpstreamProxyEnvOverride(t *testing.T) {
 
 func TestConfig_HTTPProxyEnvIgnored(t *testing.T) {
 	cfg := configWithSecret(strongSecret)
+	t.Setenv("ZIPREPORT_UPSTREAM_PROXY", "") // hermetic: a value exported in the shell would fail this test
 	t.Setenv("HTTP_PROXY", "http://env.test:3128")
 	t.Setenv("HTTPS_PROXY", "http://env.test:3128")
 	t.Setenv("NO_PROXY", "example.com")
