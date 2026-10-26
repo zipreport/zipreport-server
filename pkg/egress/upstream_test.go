@@ -3,6 +3,8 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -27,7 +29,7 @@ func TestLoopbackName(t *testing.T) {
 func TestOnThisHost(t *testing.T) {
 	ifaces := []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("fe80::1%eth0")}
 	for _, s := range []string{"127.0.0.1", "127.9.9.9", "::1", "0.0.0.0", "::", "::ffff:127.0.0.1", "192.0.2.1",
-		"::ffff:192.0.2.1", "fe80::1", "fe80::1%eth1"} {
+		"::ffff:192.0.2.1", "fe80::1", "fe80::1%eth1", "64:ff9b::7f00:1", "64:ff9b::c000:201", "2002:c000:201::"} {
 		assert.True(t, OnThisHost(netip.MustParseAddr(s), ifaces), s)
 	}
 	for _, s := range []string{"192.0.2.2", "8.8.8.8", "fe80::2"} {
@@ -356,6 +358,104 @@ func TestUpstreamAddrsCache(t *testing.T) {
 	assert.Error(t, err, "a stale cache does not hide a failed lookup")
 }
 
+func TestUpstreamAddrsHistory(t *testing.T) {
+	up, err := ParseUpstream("http://proxy.test:3128", "", nil)
+	require.NoError(t, err)
+	t0 := time.Unix(1_000_000, 0)
+	stable := netip.MustParseAddr("203.0.113.2")
+	var refuse []netip.Addr
+	for i := range 70 { // a rotating answer that always includes the stable address, first-seen long ago
+		other := netip.AddrFrom4([4]byte{198, 51, 100, byte(i)})
+		_, refuse, err = up.addrs(t0.Add(time.Duration(i)*upstreamCacheTTL), func() ([]netip.Addr, error) {
+			return []netip.Addr{stable, other}, nil
+		})
+		require.NoError(t, err)
+	}
+	assert.Contains(t, refuse, stable, "a re-seen address is never evicted")
+	assert.Contains(t, refuse, netip.MustParseAddr("198.51.100.69"))
+	assert.NotContains(t, refuse, netip.MustParseAddr("198.51.100.0"), "only the most recently seen are kept")
+	assert.Len(t, refuse, maxSeenUpstreamAddrs)
+
+	// an address seen recently but missing from the latest answer stays refused, however early it was first seen
+	up2, err := ParseUpstream("http://proxy.test:3128", "", nil)
+	require.NoError(t, err)
+	for i := range 128 {
+		answer := []netip.Addr{netip.AddrFrom4([4]byte{198, 51, 100, byte(i)})}
+		if i%2 == 0 {
+			answer = append(answer, stable)
+		}
+		_, refuse, err = up2.addrs(t0.Add(time.Duration(i)*upstreamCacheTTL), func() ([]netip.Addr, error) { return answer, nil })
+		require.NoError(t, err)
+		require.Contains(t, refuse, stable, "lookup %d: seen at most one lookup ago", i)
+	}
+
+	big := make([]netip.Addr, 0, 80)
+	for i := range 80 {
+		big = append(big, netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}))
+	}
+	_, refuse, err = up.addrs(t0.Add(100*upstreamCacheTTL), func() ([]netip.Addr, error) { return big, nil })
+	require.NoError(t, err)
+	for _, a := range big {
+		assert.Contains(t, refuse, a, "the current answer is refused in full, larger than the history or not")
+	}
+	_, refuse, err = up.addrs(t0.Add(100*upstreamCacheTTL+time.Second), func() ([]netip.Addr, error) {
+		t.Fatal("the cached answer is fresh")
+		return nil, nil
+	})
+	require.NoError(t, err)
+	for _, a := range big {
+		assert.Contains(t, refuse, a, "the cached answer too")
+	}
+}
+
+func TestRecord407Bounded(t *testing.T) {
+	up, err := ParseUpstream("http://proxy.test:3128", "", nil) // no credentials: the latch never trips
+	require.NoError(t, err)
+	t0 := time.Unix(1_000_000, 0)
+	for i := range maxAuthFails + 100 {
+		up.record407(fmt.Sprintf("d%d.test:443", i), t0.Add(time.Duration(i)*time.Millisecond))
+	}
+	assert.Len(t, up.authFails, maxAuthFails)
+	now := t0.Add(time.Second)
+	assert.True(t, up.authBlocked(fmt.Sprintf("d%d.test:443", maxAuthFails+99), now))
+	assert.False(t, up.authBlocked("d0.test:443", now), "the oldest is forgotten first")
+
+	// a caller's clock read before taking the lock can be older than every entry
+	up.record407("late.test:443", t0.Add(-time.Second))
+	assert.Len(t, up.authFails, maxAuthFails)
+}
+
+func TestDialUpstreamRechecksLatchBeforeCredentials(t *testing.T) {
+	up, err := ParseUpstream("http://user:pw@proxy.test:3128", "local", nil)
+	require.NoError(t, err)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+	got := make(chan int, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			got <- -1
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		b, _ := io.ReadAll(c)
+		got <- len(b)
+	}()
+	p := unitProxy(t, Policy{Upstream: up}, nil)
+	p.upstreamDial = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	p.upstreamPort = l.Addr().(*net.TCPAddr).Port
+	p.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		up.record407("pub.test:443", time.Now()) // another request's 407 arrives while this one dials
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	_, err = p.dialUpstream(context.Background(), "pub.test:443", "8.8.8.8:443")
+	require.ErrorIs(t, err, errUpstreamAuth)
+	assert.Zero(t, <-got, "nothing, and so no credentials, was sent to the upstream")
+}
+
 func TestStartUpstreamChecks(t *testing.T) {
 	start := func(t *testing.T, rawURL, resolve string, lookup map[string][]string) error {
 		up, err := ParseUpstream(rawURL, resolve, nil)
@@ -437,6 +537,34 @@ func TestStartUpstreamChecks(t *testing.T) {
 		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
 		_, err = p.Start()
 		assert.ErrorContains(t, err, "on this host")
+	})
+	t.Run("by-name refused when the upstream once resolved to ::1", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "upstream", nil)
+		require.NoError(t, err)
+		_, _, err = up.addrs(time.Now().Add(-time.Hour), func() ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("::1")}, nil
+		})
+		require.NoError(t, err)
+		p := unitProxy(t, Policy{Upstream: up}, map[string][]string{"p.test": {"203.0.113.2"}})
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		_, err = p.Start()
+		assert.ErrorContains(t, err, "on this host")
+	})
+	t.Run("lookup ends with the job context", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "local", nil)
+		require.NoError(t, err)
+		p := unitProxy(t, Policy{Upstream: up}, nil)
+		p.Lookup = func(ctx context.Context, _ string) ([]netip.Addr, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		_, err = p.StartContext(ctx)
+		assert.ErrorIs(t, err, context.Canceled, "the job's end is told apart from an unresolvable upstream")
+		assert.Less(t, time.Since(start), time.Second, "not left to lookupTimeout")
 	})
 	t.Run("upstream addresses normalised", func(t *testing.T) {
 		up, err := ParseUpstream("http://p.test:3128", "local", nil)

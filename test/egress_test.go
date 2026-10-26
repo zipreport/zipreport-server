@@ -114,8 +114,10 @@ type proxyOpts struct {
 	ownDial   string
 	idle      time.Duration
 
-	upstream    *egress.Upstream
-	upstreamTLS *tls.Config
+	upstream           *egress.Upstream
+	upstreamTLS        *tls.Config
+	upstreamTLSTimeout time.Duration
+	lookupFn           egress.LookupFunc // replaces lookup when set
 }
 
 func ipnet(t *testing.T, cidr string) net.Addr {
@@ -157,6 +159,7 @@ func startProxy(t *testing.T, o proxyOpts) *proxyEnv {
 	}
 	p := egress.New("localhost:"+strconv.Itoa(env.ownPort), ownDial, o.poolFirst, o.poolCount, o.policy)
 	p.UpstreamTLS = o.upstreamTLS
+	p.UpstreamTLSTimeout = o.upstreamTLSTimeout
 	p.Lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		env.lookups.Add(1)
 		ips, ok := o.lookup[host]
@@ -168,6 +171,9 @@ func startProxy(t *testing.T, o proxyOpts) *proxyEnv {
 			out = append(out, netip.MustParseAddr(s))
 		}
 		return out, nil
+	}
+	if o.lookupFn != nil {
+		p.Lookup = o.lookupFn
 	}
 	if o.dial != nil {
 		p.Dial = o.dial
@@ -1413,10 +1419,144 @@ func TestEgressProxy_MultiAddressConnNotReused(t *testing.T) {
 		lookup: map[string][]string{"multi.test": {"8.8.8.8", "8.8.4.4"}, "other.test": {"8.8.8.8"}}, dial: dial,
 	})
 	require.Equal(t, 200, status(t, env.client, "http://multi.test/a"))
-	// the connection above reached 8.8.4.4 but net/http keys it under 8.8.8.8:80; other.test (8.8.8.8 only) must
-	// not be served on it
+	require.Equal(t, 200, status(t, env.client, "http://multi.test/c"), "the same name reuses its connection")
+	// the connection above reached 8.8.4.4; other.test (8.8.8.8 only) must not be served on it
 	assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://other.test/b"))
-	assert.Equal(t, []string{"multi.test /a"}, be.requests())
+	assert.Equal(t, []string{"multi.test /a", "multi.test /c"}, be.requests())
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"8.8.8.8:80", "8.8.4.4:80", "8.8.8.8:80"}, dials)
+}
+
+func TestEgressUpstream_AuthKeyedByDestination(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	// one destination whose answer rotates, as CDN names do: three 407s from it are one destination, not three
+	var calls atomic.Int32
+	rotating := []string{"8.8.8.8", "8.8.4.4", "1.1.1.1"}
+	lookup := func(_ context.Context, host string) ([]netip.Addr, error) {
+		switch host {
+		case "cdn.test":
+			n := int(calls.Add(1))
+			var out []netip.Addr
+			for k := range rotating {
+				out = append(out, netip.MustParseAddr(rotating[(n+k)%len(rotating)]))
+			}
+			return out, nil
+		case "other.test":
+			return []netip.Addr{netip.MustParseAddr("9.9.9.9")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookupFn: lookup, dial: routingDial(fu, &dialLog{})})
+	for range 3 {
+		assert.Equal(t, 502, connectCode(t, env, "cdn.test:443"))
+	}
+	assert.Len(t, fu.requests(), 1, "the 407'd destination is blocked whatever address comes first")
+	assert.Equal(t, 502, connectCode(t, env, "other.test:443"))
+	assert.Len(t, fu.requests(), 2, "one destination's 407s never block another")
+}
+
+func TestEgressUpstream_StalledTLSUpstreamFailsFast(t *testing.T) {
+	// accepts TCP and never answers the TLS handshake
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	var held []net.Conn
+	var hmu sync.Mutex
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			hmu.Lock()
+			held = append(held, c)
+			hmu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		hmu.Lock()
+		defer hmu.Unlock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	port := l.Addr().(*net.TCPAddr).Port
+	toStall := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, l.Addr().String())
+	}
+	for _, c := range []struct{ name, host, resolve, want string }{
+		{"connect", "127.0.0.1", "local", "tls handshake failed"},
+		{"by_name_forward", "example.com", "upstream", "request failed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			up := mkUpstream(t, fmt.Sprintf("https://%s:%d", c.host, port), c.resolve)
+			env := startProxy(t, proxyOpts{
+				policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: toStall,
+				upstreamTLSTimeout: 200 * time.Millisecond,
+			})
+			start := time.Now()
+			if c.resolve == "local" {
+				assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+			} else {
+				assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://pub.test/x"))
+			}
+			assert.Less(t, time.Since(start), 3*time.Second, "the handshake is bounded, not left to the job timeout")
+			_, last := env.proxy.UpstreamErrors()
+			assert.Equal(t, c.want, last)
+		})
+	}
+}
+
+func TestRenderJob_UpstreamLookupCutByJobTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser-based test in short mode")
+	}
+	_, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+	engine.SetEgressPolicy(egress.Policy{Upstream: mkUpstream(t, "http://slow-proxy.test:3128", "local")})
+	engine.SetEgressLookup(func(ctx context.Context, _ string) ([]netip.Addr, error) {
+		<-ctx.Done() // a resolver that never answers
+		return nil, ctx.Err()
+	})
+	b := buildZipFiles(t, map[string][]byte{"index.html": []byte("<html><body>x</body></html>")})
+	reader, err := zpt.NewZptReader(bytes.NewReader(b), int64(len(b)))
+	require.NoError(t, err)
+	job := render.NewRenderJob(reader, uuid.New())
+	job.IndexFile = "index.html"
+	job.JobTimeoutS = 1
+	result := engine.RenderJob(job)
+	require.False(t, result.Success)
+	assert.ErrorIs(t, result.Error, render.ErrJobTimeout)
+}
+
+func TestEgressUpstream_CancelledDialNotCounted(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+	up := mkUpstream(t, fu.proxyURL("http", "", "127.0.0.1"), "local")
+	entered, returned := make(chan struct{}), make(chan struct{})
+	block := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(entered)
+		<-ctx.Done()
+		defer close(returned)
+		return nil, ctx.Err()
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}}, dial: block})
+	c, err := net.Dial("tcp", env.addr)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	_, err = fmt.Fprintf(c, "CONNECT pub.test:443 HTTP/1.1\r\nHost: pub.test:443\r\n\r\n")
+	require.NoError(t, err)
+	<-entered
+	require.NoError(t, env.proxy.Close())
+	<-returned
+	time.Sleep(200 * time.Millisecond) // let the handler finish its bookkeeping
+	n, last := env.proxy.UpstreamErrors()
+	assert.Zero(t, n, "a cancelled dial is not an upstream failure (last: %q)", last)
 }
 
 func TestEgressUpstream_OriginAuthResponseDoesNotLatch(t *testing.T) {

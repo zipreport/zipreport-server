@@ -27,7 +27,8 @@ test-short:
 	$(GOTEST) -v -short -p 1 ./test/... ./internal/... ./pkg/...
 
 UPSTREAM_COMPOSE = docker compose -f test/upstream/docker-compose.yml
-UPSTREAM_BUILD ?= --build # CI pre-builds the image with a layer cache and passes UPSTREAM_BUILD=
+# CI pre-builds the image with a layer cache and passes UPSTREAM_BUILD=
+UPSTREAM_BUILD ?= --build
 
 # Upstream proxy tests against a real Squid (needs Docker + openssl); see test/upstream/docker-compose.yml
 test-upstream:

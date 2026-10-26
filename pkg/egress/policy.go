@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,9 +71,10 @@ func (p Policy) allowsHostPort(key string) bool {
 
 const (
 	defaultAuthCooldown  = 5 * time.Minute
-	authLatchTargets     = 3                // distinct CONNECT targets answered 407 before every target is blocked
+	authLatchTargets     = 3                // distinct destinations answered 407 before every destination is blocked
 	upstreamCacheTTL     = 30 * time.Second // how long one answer for the upstream's own name is reused
 	maxSeenUpstreamAddrs = 64
+	maxAuthFails         = 1024 // destinations remembered with a 407; the oldest is forgotten first
 )
 
 // Upstream routes vetted public traffic through an operator's HTTP(S) proxy. One value is shared by every job's
@@ -83,13 +85,13 @@ type Upstream struct {
 	NoProxy      []Rule        // public destinations dialled directly instead (still vetted)
 	AuthCooldown time.Duration // 0: 5m; how long a 407 blocks further attempts; test seam
 
-	authBlockedUntil atomic.Int64 // unix nanos; set once authLatchTargets distinct targets got a 407
+	authBlockedUntil atomic.Int64 // unix nanos; set once authLatchTargets distinct destinations got a 407 (credentials only)
 
 	mu        sync.Mutex
-	authFails map[string]time.Time // CONNECT target -> its last 407, within the cooldown
+	authFails map[string]time.Time // requested destination ("host:port") -> its last 407; expired entries pruned lazily
 	cached    []netip.Addr         // last answer for the upstream's name, as resolved
 	cachedAt  time.Time
-	seen      []netip.Addr // every address that name has resolved to (normalised), most recent last
+	seen      []netip.Addr // addresses that name has resolved to (unmapped, zone dropped), least recently seen first
 }
 
 func (u *Upstream) cooldown() time.Duration {
@@ -99,8 +101,8 @@ func (u *Upstream) cooldown() time.Duration {
 	return defaultAuthCooldown
 }
 
-// authBlocked reports whether target ("host:port") may not be tried: every target is blocked once the latch tripped,
-// and a target that got a 407 itself stays blocked for the cooldown.
+// authBlocked reports whether dest (the requested "host:port") may not be tried: every destination is blocked once
+// the latch tripped, and a destination that got a 407 itself stays blocked for the cooldown.
 func (u *Upstream) authBlocked(target string, now time.Time) bool {
 	if now.UnixNano() < u.authBlockedUntil.Load() {
 		return true
@@ -111,11 +113,12 @@ func (u *Upstream) authBlocked(target string, now time.Time) bool {
 	return ok && now.Sub(at) < u.cooldown()
 }
 
-// record407 notes a 407 in reply to our own CONNECT to target. A 407 can also be the upstream's policy for that one
-// destination, so a single target never blocks the rest: only authLatchTargets distinct targets within the cooldown
-// (a wrong password fails everywhere) trip the latch. Without credentials there is no password to lock out, so a
-// 407 blocks only its own target.
-func (u *Upstream) record407(target string, now time.Time) {
+// record407 notes a 407 in reply to our own CONNECT for dest, the requested "host:port" (never a vetted IP: one
+// destination's addresses rotate). A 407 can also be the upstream's policy for that one destination, so a single
+// destination never blocks the rest: only authLatchTargets distinct destinations within the cooldown (a wrong
+// password fails everywhere) trip the latch. Without credentials there is no password to lock out, so a 407 blocks
+// only its own destination.
+func (u *Upstream) record407(dest string, now time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.authFails == nil {
@@ -126,19 +129,29 @@ func (u *Upstream) record407(target string, now time.Time) {
 			delete(u.authFails, t)
 		}
 	}
-	u.authFails[target] = now
+	if _, ok := u.authFails[dest]; !ok && len(u.authFails) >= maxAuthFails {
+		var oldest string
+		var at time.Time
+		for t, a := range u.authFails {
+			if oldest == "" || a.Before(at) {
+				oldest, at = t, a
+			}
+		}
+		delete(u.authFails, oldest)
+	}
+	u.authFails[dest] = now
 	if u.URL.User != nil && len(u.authFails) >= authLatchTargets {
 		u.authBlockedUntil.Store(now.Add(u.cooldown()).UnixNano())
 	}
 }
 
-// addrs returns the upstream's addresses to dial (the cached answer while fresh, else a new lookup) and every
-// address its name has ever resolved to, normalised, for the destination refusal: a rotating DNS answer must not
-// hide one of the upstream's addresses from it.
+// addrs returns the upstream's addresses to dial (the cached answer while fresh, else a new lookup) and, for the
+// destination refusal, the current answer plus the addresses its name resolved to before (up to the
+// maxSeenUpstreamAddrs most recently seen): a rotating DNS answer must not hide one of the upstream's addresses.
 func (u *Upstream) addrs(now time.Time, lookup func() ([]netip.Addr, error)) (dial, refuse []netip.Addr, err error) {
 	u.mu.Lock()
 	if u.cached != nil && now.Sub(u.cachedAt) < upstreamCacheTTL {
-		dial, refuse = u.cached, append([]netip.Addr(nil), u.seen...)
+		dial, refuse = u.cached, u.refusals(u.cached)
 		u.mu.Unlock()
 		return dial, refuse, nil
 	}
@@ -152,19 +165,32 @@ func (u *Upstream) addrs(now time.Time, lookup func() ([]netip.Addr, error)) (di
 	defer u.mu.Unlock()
 	u.cached, u.cachedAt = res, now
 	for _, a := range res {
-		n := norm(a)
-		known := false
-		for _, s := range u.seen {
-			known = known || s == n
+		a = a.WithZone("").Unmap() // not norm: ::1 must stay loopback for the on-host checks
+		for i, s := range u.seen {
+			if s == a {
+				u.seen = append(u.seen[:i:i], u.seen[i+1:]...) // re-seen: move to the most recent end
+				break
+			}
 		}
-		if !known {
-			u.seen = append(u.seen, n)
-		}
+		u.seen = append(u.seen, a)
 	}
 	if len(u.seen) > maxSeenUpstreamAddrs {
-		u.seen = u.seen[len(u.seen)-maxSeenUpstreamAddrs:]
+		u.seen = append([]netip.Addr(nil), u.seen[len(u.seen)-maxSeenUpstreamAddrs:]...)
 	}
-	return res, append([]netip.Addr(nil), u.seen...), nil
+	return res, u.refusals(res), nil
+}
+
+// refusals returns the history plus the current answer, which an answer larger than the history leaves out.
+// Called with mu held.
+func (u *Upstream) refusals(current []netip.Addr) []netip.Addr {
+	refuse := append([]netip.Addr(nil), u.seen...)
+	for _, a := range current {
+		a = a.WithZone("").Unmap()
+		if !slices.Contains(refuse, a) {
+			refuse = append(refuse, a)
+		}
+	}
+	return refuse
 }
 
 // ParseUpstream validates the zipReport.upstreamProxy settings. An empty rawURL disables chaining and returns nil.
@@ -261,15 +287,17 @@ func InterfaceIPs(addrs []net.Addr) []netip.Addr {
 	return out
 }
 
-// OnThisHost reports whether ip is loopback, unspecified, or one of ifaces (zone dropped, IPv4-mapped unmapped).
+// OnThisHost reports whether ip is loopback, unspecified, or one of ifaces, as given (zone dropped, IPv4-mapped
+// unmapped) or in its NAT64, 6to4 or IPv4-compatible form.
 func OnThisHost(ip netip.Addr, ifaces []netip.Addr) bool {
-	ip = ip.WithZone("").Unmap()
-	if ip.IsLoopback() || ip.IsUnspecified() {
-		return true
-	}
-	for _, a := range ifaces {
-		if a.WithZone("").Unmap() == ip {
+	for _, c := range []netip.Addr{ip.WithZone("").Unmap(), norm(ip)} {
+		if c.IsLoopback() || c.IsUnspecified() {
 			return true
+		}
+		for _, a := range ifaces {
+			if a.WithZone("").Unmap() == c {
+				return true
+			}
 		}
 	}
 	return false

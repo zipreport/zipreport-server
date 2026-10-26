@@ -122,7 +122,8 @@ ephemeral HTTP servers on localhost as part of the rendering process.
   needs destination ACLs there and must never be used with a proxy sharing this server's network namespace.
 - Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy and follow the same
   rules: refused, and counted in the "blocked network requests" warning logged per job, when the name does not resolve
-  or resolves to a non-public address; otherwise they go out (through `zipReport.upstreamProxy` when one is set).
+  or resolves to a non-public address; otherwise they go out (through `zipReport.upstreamProxy` when one is set). With
+  `resolve: "upstream"`, a name that does not resolve locally is handed to the upstream instead.
 - Residual risks of the egress proxy:
   - **WebRTC: pages can send STUN binding requests over UDP to arbitrary host:port, including internal addresses,
     outside the egress proxy (Chrome 156 ignores --force-webrtc-ip-handling-policy here). Only a network-level egress

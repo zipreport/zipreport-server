@@ -203,6 +203,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		proxy.Lookup = e.egressLookup
 	}
 	proxyAddr, err := proxy.StartContext(jobCtx)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		err = jobCtxErr(jobCtx) // the job ended during the upstream lookup: not the upstream's fault
+	}
 	if err != nil {
 		e.logger.Error(err, "failed to start egress proxy", log.KV{"id": jobId})
 		return &JobResult{Success: false, Error: err}

@@ -40,6 +40,9 @@ type InterfaceAddrsFunc func() ([]net.Addr, error)
 
 type targetsKey struct{}
 
+// destKey carries the requested "host:port" to the tunnel dial, which only sees the vetted targets.
+type destKey struct{}
+
 // hop-by-hop headers are meaningful for one connection only and are never forwarded
 var hopByHop = []string{
 	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
@@ -48,13 +51,14 @@ var hopByHop = []string{
 
 // Proxy is a per-job forward proxy that refuses destinations a rendered page must not reach.
 type Proxy struct {
-	RetireInterval time.Duration      // default 10s; delay before each disposal attempt in Retire
-	RetireAttempts int                // default 6; disposal attempts in Retire
-	Lookup         LookupFunc         // default net.DefaultResolver.LookupNetIP; test seam
-	Dial           DialFunc           // default net.Dialer with a 10s timeout; test seam
-	InterfaceAddrs InterfaceAddrsFunc // default net.InterfaceAddrs; test seam
-	TunnelIdle     time.Duration      // default 60s; CONNECT tunnel idle limit; test seam
-	UpstreamTLS    *tls.Config        // default: system roots, ServerName from the upstream URL; test seam for https upstreams
+	RetireInterval     time.Duration      // default 10s; delay before each disposal attempt in Retire
+	RetireAttempts     int                // default 6; disposal attempts in Retire
+	Lookup             LookupFunc         // default net.DefaultResolver.LookupNetIP; test seam
+	Dial               DialFunc           // default net.Dialer with a 10s timeout; test seam
+	InterfaceAddrs     InterfaceAddrsFunc // default net.InterfaceAddrs; test seam
+	TunnelIdle         time.Duration      // default 60s; CONNECT tunnel idle limit; test seam
+	UpstreamTLS        *tls.Config        // default: system roots, ServerName from the upstream URL; test seam for https upstreams
+	UpstreamTLSTimeout time.Duration      // default 10s; TLS handshake with an https upstream; test seam
 
 	ownHost   string
 	ownDial   string
@@ -68,8 +72,8 @@ type Proxy struct {
 	// tunnelTransport (address-vetted upstream routes) and upstreamTransport (by-name routes) exist only with an upstream
 	tunnelTransport   *http.Transport
 	upstreamTransport *http.Transport
-	upstreamAddrs     []netip.Addr // vetted at Start: every address of the upstream proxy, normalised (for comparisons)
-	upstreamDial      []netip.Addr // the same addresses as resolved (for dialling: norm turns ::1 into 0.0.0.1)
+	upstreamAddrs     []netip.Addr // set at Start: the upstream's current and recently seen addresses, normalised (for comparisons)
+	upstreamDial      []netip.Addr // set at Start: its current answer as resolved (for dialling: norm turns ::1 into 0.0.0.1)
 	upstreamPort      int
 	base              context.Context // cancelled to abort in-flight forwards
 	cancel            context.CancelFunc
@@ -137,9 +141,15 @@ func (p *Proxy) StartContext(ctx context.Context) (string, error) {
 		dial, refuse, err := up.addrs(time.Now(), func() ([]netip.Addr, error) { return p.resolve(ctx, up.Hostname()) })
 		if err != nil {
 			// fail closed: without its addresses the upstream-address refusals cannot work
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("cannot resolve the upstream proxy: %w", ctx.Err())
+			}
 			return "", errors.New("cannot resolve the upstream proxy")
 		}
-		p.upstreamDial, p.upstreamAddrs = dial, refuse
+		p.upstreamDial = dial
+		for _, a := range refuse {
+			p.upstreamAddrs = append(p.upstreamAddrs, norm(a))
+		}
 		for _, a := range append(append([]netip.Addr(nil), dial...), refuse...) {
 			if up.ByName && p.onThisHost(a) {
 				return "", errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
@@ -179,7 +189,7 @@ func (p *Proxy) StartContext(ctx context.Context) (string, error) {
 				return p.dialUpstreamProxyRaw(ctx)
 			},
 			TLSClientConfig:       p.upstreamTLSConfig(),
-			TLSHandshakeTimeout:   dialTimeout,
+			TLSHandshakeTimeout:   p.upstreamTLSTimeout(),
 			DisableCompression:    true,
 			ResponseHeaderTimeout: respHeaderLimit,
 			IdleConnTimeout:       30 * time.Second,
@@ -528,7 +538,8 @@ func (p *Proxy) transportDial(ctx context.Context, _, _ string) (net.Conn, error
 // nobody waits on any more (closeIdle), and every phase of an upstream dial carries a deadline.
 func (p *Proxy) tunnelDial(ctx context.Context, _, _ string) (net.Conn, error) {
 	targets, _ := ctx.Value(targetsKey{}).([]string)
-	return p.dialViaUpstream(ctx, targets)
+	dest, _ := ctx.Value(destKey{}).(string)
+	return p.dialViaUpstream(ctx, dest, targets)
 }
 
 var (
@@ -566,6 +577,13 @@ func (p *Proxy) dialUpstreamProxyRaw(ctx context.Context) (net.Conn, error) {
 	return nil, last
 }
 
+func (p *Proxy) upstreamTLSTimeout() time.Duration {
+	if p.UpstreamTLSTimeout > 0 {
+		return p.UpstreamTLSTimeout
+	}
+	return dialTimeout
+}
+
 // dialUpstreamProxy is dialUpstreamProxyRaw plus the TLS hop for an https:// upstream.
 func (p *Proxy) dialUpstreamProxy(ctx context.Context) (net.Conn, error) {
 	conn, err := p.dialUpstreamProxyRaw(ctx)
@@ -576,7 +594,7 @@ func (p *Proxy) dialUpstreamProxy(ctx context.Context) (net.Conn, error) {
 		return conn, nil
 	}
 	tc := tls.Client(conn, p.upstreamTLSConfig())
-	_ = conn.SetDeadline(time.Now().Add(dialTimeout)) // the dial context may be detached from cancellation
+	_ = conn.SetDeadline(time.Now().Add(p.upstreamTLSTimeout())) // the dial context may be detached from cancellation
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, errUpstreamTLS
@@ -592,19 +610,20 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// authLatched reports whether a recent 407 blocks target ("host:port"), and records the attempt if so.
-func (p *Proxy) authLatched(target string) bool {
-	if p.policy.Upstream.authBlocked(target, time.Now()) {
+// authLatched reports whether a recent 407 blocks dest (the requested "host:port"), and records the attempt if so.
+func (p *Proxy) authLatched(dest string) bool {
+	if p.policy.Upstream.authBlocked(dest, time.Now()) {
 		p.upstreamFailed("407 (latched)")
 		return true
 	}
 	return false
 }
 
-// dialUpstream asks the upstream proxy for a tunnel to target and returns it once the upstream answers 200.
-func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, error) {
+// dialUpstream asks the upstream proxy for a tunnel to target (a vetted "ip:port", or the name in by-name mode) for
+// the requested destination dest, and returns it once the upstream answers 200.
+func (p *Proxy) dialUpstream(ctx context.Context, dest, target string) (net.Conn, error) {
 	up := p.policy.Upstream
-	if p.authLatched(target) {
+	if p.authLatched(dest) {
 		return nil, errUpstreamAuth
 	}
 	conn, err := p.dialUpstreamProxy(ctx)
@@ -623,6 +642,10 @@ func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, erro
 	_ = conn.SetDeadline(time.Now().Add(respHeaderLimit))
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
+	if p.authLatched(dest) { // again: a 407 may have arrived during the dial and TLS handshake; do not send credentials
+		_ = conn.Close()
+		return nil, errUpstreamAuth
+	}
 
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: target}, Host: target, Header: http.Header{}}
 	if up.URL.User != nil {
@@ -647,7 +670,7 @@ func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, erro
 	}
 	if resp.StatusCode == http.StatusProxyAuthRequired {
 		_ = conn.Close()
-		up.record407(target, time.Now())
+		up.record407(dest, time.Now())
 		p.upstreamFailed(resp.Status)
 		return nil, errUpstreamAuth
 	}
@@ -668,11 +691,11 @@ func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, erro
 }
 
 // dialViaUpstream tries each target through its own upstream tunnel, in order, like dialTargets, but stops at once
-// on errUpstreamAuth.
-func (p *Proxy) dialViaUpstream(ctx context.Context, targets []string) (net.Conn, error) {
+// on errUpstreamAuth. dest is the requested "host:port" the 407 bookkeeping is keyed on.
+func (p *Proxy) dialViaUpstream(ctx context.Context, dest string, targets []string) (net.Conn, error) {
 	var last error
 	for _, t := range targets {
-		c, err := p.dialUpstream(ctx, t)
+		c, err := p.dialUpstream(ctx, dest, t)
 		if err == nil {
 			return c, nil
 		}
@@ -732,6 +755,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	own := strings.ToLower(req.URL.Host) == p.ownHost
 	var targets []string
 	var rt route
+	var dest string // the requested "host:port"
 	if own {
 		p.sawOwn.Store(true)
 		targets = []string{p.ownDial}
@@ -740,6 +764,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 		if port == "" {
 			port = "80"
 		}
+		dest = hostPortKey(req.URL.Hostname(), port)
 		var err error
 		rt, err = p.plan(req.Context(), req.URL.Hostname(), port)
 		if err != nil {
@@ -754,12 +779,17 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	stop := context.AfterFunc(p.base, cancel)
 	defer stop()
 	defer cancel()
-	outReq := req.Clone(context.WithValue(ctx, targetsKey{}, targets))
+	outReq := req.Clone(context.WithValue(context.WithValue(ctx, targetsKey{}, targets), destKey{}, dest))
 	outReq.RequestURI = ""
-	// the client's connection semantics do not apply to the upstream hop; but a pooled connection is keyed by
-	// targets[0] while the dial may have reached a later target, so never reuse one from a multi-address route
-	outReq.Close = len(targets) > 1
+	outReq.Close = false // the client's connection semantics do not apply to the upstream hop
+	// URL.Host is the connection pool key (the dial functions ignore it; requests go out origin-form with their own
+	// Host). A dial may reach any of the vetted targets, so key the pool by the requested name: a pooled connection
+	// then only serves the name it was vetted for. Keyed by targets[0], another name resolving to that first address
+	// could reuse a connection that actually reached a later one.
 	outReq.URL.Host = targets[0]
+	if !own && !rt.byName {
+		outReq.URL.Host = dest
+	}
 	outReq.Host = req.Host // the zpt server checks Host against its own name
 	stripHopByHop(outReq.Header)
 
@@ -767,7 +797,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case rt.upstream && rt.byName:
 		transport = p.upstreamTransport
-		if p.authLatched(targets[0]) {
+		if p.authLatched(dest) {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			return
 		}
@@ -828,7 +858,7 @@ func (p *Proxy) connect(w http.ResponseWriter, req *http.Request) {
 	}
 	var up net.Conn
 	if r.upstream {
-		up, err = p.dialViaUpstream(ctx, r.targets)
+		up, err = p.dialViaUpstream(ctx, hostPortKey(host, port), r.targets)
 	} else {
 		up, err = p.dialTargets(ctx, r.targets)
 	}
