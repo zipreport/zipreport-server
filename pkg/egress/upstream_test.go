@@ -293,6 +293,29 @@ func TestStartUpstreamChecks(t *testing.T) {
 	t.Run("local-mode upstream on loopback allowed", func(t *testing.T) {
 		assert.NoError(t, start(t, "http://p.test:3128", "local", map[string][]string{"p.test": {"127.0.0.1"}}))
 	})
+	t.Run("by-name upstream on IPv6 loopback refused", func(t *testing.T) {
+		err := start(t, "http://p.test:3128", "upstream", map[string][]string{"p.test": {"::1"}})
+		assert.ErrorContains(t, err, "on this host")
+	})
+	t.Run("upstream dialled at its resolved address", func(t *testing.T) {
+		for _, s := range []string{"::1", "64:ff9b::cb00:7102", "2002:cb00:7102::1", "203.0.113.2"} {
+			up, err := ParseUpstream("http://p.test:3128", "local", nil)
+			require.NoError(t, err)
+			p := unitProxy(t, Policy{Upstream: up}, map[string][]string{"p.test": {s}})
+			p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+			var dialled []string
+			p.Dial = func(_ context.Context, _, addr string) (net.Conn, error) {
+				dialled = append(dialled, addr)
+				return nil, errors.New("no network in unit tests")
+			}
+			_, err = p.Start()
+			require.NoError(t, err)
+			_, _ = p.dialUpstreamProxyRaw(context.Background())
+			_ = p.Close()
+			assert.Equal(t, []string{net.JoinHostPort(s, "3128")}, dialled, s)
+			assert.True(t, p.isUpstreamAddr(netip.MustParseAddr(s)), s)
+		}
+	})
 	t.Run("upstream addresses normalised", func(t *testing.T) {
 		up, err := ParseUpstream("http://p.test:3128", "local", nil)
 		require.NoError(t, err)

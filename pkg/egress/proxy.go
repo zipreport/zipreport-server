@@ -66,7 +66,8 @@ type Proxy struct {
 	// tunnelTransport (address-vetted upstream routes) and upstreamTransport (by-name routes) exist only with an upstream
 	tunnelTransport   *http.Transport
 	upstreamTransport *http.Transport
-	upstreamAddrs     []netip.Addr // vetted at Start: every address of the upstream proxy, normalised
+	upstreamAddrs     []netip.Addr // vetted at Start: every address of the upstream proxy, normalised (for comparisons)
+	upstreamDial      []netip.Addr // the same addresses as resolved (for dialling: norm turns ::1 into 0.0.0.1)
 	upstreamPort      int
 	base              context.Context // cancelled to abort in-flight forwards
 	cancel            context.CancelFunc
@@ -142,11 +143,12 @@ func (p *Proxy) Start() (string, error) {
 			// fail closed: without its addresses the upstream-address refusals cannot work
 			return "", errors.New("cannot resolve the upstream proxy")
 		}
-		p.upstreamAddrs = p.upstreamAddrs[:0]
-		for _, a := range addrs {
-			a = norm(a)
+		onHost := func(a netip.Addr) bool { return a.IsLoopback() || a.IsUnspecified() || p.isLocal(a) }
+		for _, raw := range addrs {
+			a := norm(raw)
 			p.upstreamAddrs = append(p.upstreamAddrs, a)
-			if up.ByName && (a.IsLoopback() || a.IsUnspecified() || p.isLocal(a)) {
+			p.upstreamDial = append(p.upstreamDial, raw)
+			if up.ByName && (onHost(raw) || onHost(a)) {
 				return "", errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
 			}
 		}
@@ -553,7 +555,7 @@ func (p *Proxy) upstreamTLSConfig() *tls.Config {
 // operator config rather than from a rendered page.
 func (p *Proxy) dialUpstreamProxyRaw(ctx context.Context) (net.Conn, error) {
 	var last error
-	for _, a := range p.upstreamAddrs {
+	for _, a := range p.upstreamDial {
 		c, err := p.Dial(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(p.upstreamPort)))
 		if err == nil {
 			return c, nil
