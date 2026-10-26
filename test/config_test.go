@@ -363,6 +363,9 @@ func TestConfig_HTTPProxyEnvIgnored(t *testing.T) {
 }
 
 func TestConfigureEngine_UpstreamPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser-based test in short mode")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	engine := render.NewEngine(ctx, 1, 31810, sharedMetrics, nil)
