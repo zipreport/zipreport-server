@@ -814,9 +814,10 @@ func TestRender_FailsClosedWhenContextBypassesProxy(t *testing.T) {
 
 // backend records the Host and request URI of every request and answers "backend".
 type backend struct {
-	srv  *httptest.Server
-	mu   sync.Mutex
-	seen []string // "host uri"
+	srv   *httptest.Server
+	mu    sync.Mutex
+	seen  []string // "host uri"
+	auths []string // Proxy-Authorization values that reached the origin
 }
 
 func newBackend(t *testing.T) *backend {
@@ -825,6 +826,9 @@ func newBackend(t *testing.T) *backend {
 	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.seen = append(b.seen, r.Host+" "+r.RequestURI)
+		if v := r.Header.Get("Proxy-Authorization"); v != "" {
+			b.auths = append(b.auths, v)
+		}
 		b.mu.Unlock()
 		_, _ = w.Write([]byte("backend"))
 	}))
@@ -1261,6 +1265,32 @@ func TestEgressUpstream_ProxyAuthorization(t *testing.T) {
 		require.Len(t, reqs, 1)
 		assert.Equal(t, []string{want}, reqs[0].auths)
 	})
+	// without upstream credentials net/http adds no header of its own, so only stripping keeps the page's out
+	pageAuth := func(t *testing.T, env *proxyEnv) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, "http://pub.test/x", nil)
+		require.NoError(t, err)
+		req.Header.Set("Proxy-Authorization", "Basic ZXZpbA==")
+		resp, err := env.client.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+	}
+	t.Run("by_name_forward_page_value_stripped", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+		up := mkUpstream(t, fu.proxyURL("http", "", "example.com"), "upstream")
+		env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: routingDial(fu, &dialLog{})})
+		pageAuth(t, env)
+		reqs := fu.requests()
+		require.Len(t, reqs, 1)
+		assert.Empty(t, reqs[0].auths)
+	})
+	t.Run("local_forward_page_value_stripped", func(t *testing.T) {
+		h := startLocal(t, fakeUpstreamOpts{}, map[string][]string{"pub.test": {"8.8.8.8"}}, egress.Policy{})
+		pageAuth(t, h.env)
+		require.Len(t, h.be.requests(), 1)
+		assert.Empty(t, h.be.auths, "the page's value must not reach the origin through the tunnel")
+	})
 }
 
 func TestEgressUpstream_AuthFailureNotRetried(t *testing.T) {
@@ -1283,8 +1313,9 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	be := newBackend(t)
 	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
 	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
-	up.AuthCooldown = 300 * time.Millisecond
-	lookup := map[string][]string{"pub.test": {"8.8.8.8"}}
+	lookup := map[string][]string{
+		"pub.test": {"8.8.8.8"}, "b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"},
+	}
 	start := func() *proxyEnv {
 		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
 	}
@@ -1293,14 +1324,99 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	assert.Equal(t, 502, connectCode(t, env1, "pub.test:443"))
 	require.Len(t, fu.requests(), 1)
 	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
-	assert.Len(t, fu.requests(), 1, "latched: the second job's proxy must not contact the upstream")
+	assert.Len(t, fu.requests(), 1, "the refused target is blocked for every job")
 	n, last := env2.proxy.UpstreamErrors()
 	assert.Equal(t, 1, n)
 	assert.Contains(t, last, "latched")
 
-	time.Sleep(450 * time.Millisecond)
-	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
-	assert.Len(t, fu.requests(), 2, "after the cool-down the upstream is tried again")
+	// one destination's 407 may be the upstream's policy for it: other targets are still tried, until a wrong
+	// password shows (407s on three distinct targets) and every target is blocked
+	assert.Equal(t, 502, connectCode(t, env2, "b.test:443"))
+	assert.Len(t, fu.requests(), 2)
+	assert.Equal(t, 502, connectCode(t, env2, "c.test:443"))
+	assert.Len(t, fu.requests(), 3)
+	assert.Equal(t, 502, connectCode(t, env1, "d.test:443"))
+	assert.Len(t, fu.requests(), 3, "latched: no further logins")
+}
+
+func TestEgressUpstream_AuthWithoutCredentialsNeverBlocksAll(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "", "127.0.0.1"), "local")
+	lookup := map[string][]string{
+		"pub.test": {"8.8.8.8"}, "b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"},
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+	for i, target := range []string{"pub.test:443", "b.test:443", "c.test:443", "d.test:443"} {
+		assert.Equal(t, 502, connectCode(t, env, target))
+		assert.Len(t, fu.requests(), i+1, "no password to lock out: a page cannot block other destinations")
+	}
+	assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+	assert.Len(t, fu.requests(), 4, "the refused target itself stays blocked")
+}
+
+func TestEgressUpstream_ByNameForwardLatched(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "example.com"), "upstream")
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: routingDial(fu, &dialLog{})})
+	for _, target := range []string{"a.test:443", "b.test:443", "c.test:443"} {
+		require.Equal(t, 502, connectCode(t, env, target))
+	}
+	require.Len(t, fu.requests(), 3)
+	assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://pub.test/x"))
+	assert.Len(t, fu.requests(), 3, "latched: the by-name forward must not log in again")
+	_, last := env.proxy.UpstreamErrors()
+	assert.Equal(t, "407 (latched)", last)
+}
+
+func TestEgressUpstream_FailureClassification(t *testing.T) {
+	refuseAll := func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("connection refused") }
+	t.Run("connect_dial_failed", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+		up := mkUpstream(t, fu.proxyURL("http", "", "127.0.0.1"), "local")
+		env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}}, dial: refuseAll})
+		assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+		n, last := env.proxy.UpstreamErrors()
+		assert.Equal(t, 1, n)
+		assert.Equal(t, "dial failed", last)
+	})
+	t.Run("by_name_forward_failed", func(t *testing.T) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, fakeUpstreamOpts{})
+		up := mkUpstream(t, fu.proxyURL("http", "", "example.com"), "upstream")
+		env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: refuseAll})
+		assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://pub.test/x"))
+		n, last := env.proxy.UpstreamErrors()
+		assert.Equal(t, 1, n)
+		assert.Equal(t, "request failed", last)
+	})
+}
+
+func TestEgressProxy_MultiAddressConnNotReused(t *testing.T) {
+	be := newBackend(t)
+	beAddr := be.srv.Listener.Addr().String()
+	var dials []string
+	var mu sync.Mutex
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		dials = append(dials, addr)
+		mu.Unlock()
+		if addr == "8.8.8.8:80" {
+			return nil, errors.New("unreachable")
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, network, beAddr)
+	}
+	env := startProxy(t, proxyOpts{
+		lookup: map[string][]string{"multi.test": {"8.8.8.8", "8.8.4.4"}, "other.test": {"8.8.8.8"}}, dial: dial,
+	})
+	require.Equal(t, 200, status(t, env.client, "http://multi.test/a"))
+	// the connection above reached 8.8.4.4 but net/http keys it under 8.8.8.8:80; other.test (8.8.8.8 only) must
+	// not be served on it
+	assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://other.test/b"))
+	assert.Equal(t, []string{"multi.test /a"}, be.requests())
 }
 
 func TestEgressUpstream_OriginAuthResponseDoesNotLatch(t *testing.T) {
@@ -1445,6 +1561,10 @@ func TestEgressUpstream_HTTPSUpstream(t *testing.T) {
 			dial: routingDial(fu, &dialLog{}),
 		})
 		assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
+		assert.Empty(t, fu.requests(), "nothing, credentials included, is sent before the certificate is verified")
+		n, last := env.proxy.UpstreamErrors()
+		assert.Equal(t, 1, n)
+		assert.Equal(t, "tls handshake failed", last)
 	})
 }
 

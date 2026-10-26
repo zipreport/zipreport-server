@@ -118,15 +118,16 @@ func unitProxy(t *testing.T, policy Policy, lookup map[string][]string, upstream
 
 func TestPlanRoutes(t *testing.T) {
 	lookup := map[string][]string{
-		"pub.test":   {"8.8.8.8", "8.8.4.4"},
-		"intra.test": {"10.0.0.5"},
-		"mixed.test": {"8.8.8.8", "10.0.0.5"},
-		"loop.test":  {"127.0.0.1"},
-		"iface.test": {"192.0.2.1"},
-		"proxy.test": {"203.0.113.2"},
-		"near.test":  {"203.0.113.2"}, // a different name for the upstream's address
-		"nat64.test": {"64:ff9b::cb00:7102"},
-		"cdn.test":   {"1.1.1.1"},
+		"pub.test":         {"8.8.8.8", "8.8.4.4"},
+		"intra.test":       {"10.0.0.5"},
+		"mixed.test":       {"8.8.8.8", "10.0.0.5"},
+		"loop.test":        {"127.0.0.1"},
+		"iface.test":       {"192.0.2.1"},
+		"proxy.test":       {"203.0.113.2"},
+		"near.test":        {"203.0.113.2"}, // a different name for the upstream's address
+		"nat64.test":       {"64:ff9b::cb00:7102"},
+		"cdn.test":         {"1.1.1.1"},
+		"nat64-iface.test": {"64:ff9b::c000:201"}, // NAT64 form of this host's interface address 192.0.2.1
 	}
 	allow := func(rules ...string) []Rule {
 		var out []Rule
@@ -180,6 +181,10 @@ func TestPlanRoutes(t *testing.T) {
 			wantNoLookups: true},
 		{name: "local/upstream port on loopback refused even when allowed", resolve: "local",
 			allow: allow("127.0.0.0/8"), host: "loop.test", port: "3128", wantRefused: true},
+		{name: "local/NAT64 form of an interface address refused", resolve: "local", host: "nat64-iface.test",
+			port: "443", wantRefused: true},
+		{name: "local/NAT64 form of an interface address on a reserved port refused", resolve: "local",
+			allow: allow("64:ff9b::/96"), host: "nat64-iface.test", port: "22001", wantRefused: true},
 		{name: "local/upstream port on a public host allowed", resolve: "local", host: "pub.test", port: "3128",
 			want: viaIP("8.8.8.8:3128", "8.8.4.4:3128")},
 
@@ -251,20 +256,104 @@ func TestPlanWithoutUpstreamMatchesVet(t *testing.T) {
 }
 
 func TestAuthLatch(t *testing.T) {
-	up, err := ParseUpstream("http://u:p@proxy.test:3128", "", nil)
-	require.NoError(t, err)
-	up.AuthCooldown = 50 * time.Millisecond
-	a := unitProxy(t, Policy{Upstream: up}, nil, "203.0.113.2")
-	b := unitProxy(t, Policy{Upstream: up}, nil, "203.0.113.2")
+	t0 := time.Unix(1_000_000, 0)
+	mk := func(t *testing.T, rawURL string) *Upstream {
+		up, err := ParseUpstream(rawURL, "", nil)
+		require.NoError(t, err)
+		return up
+	}
+	t.Run("a 407 blocks only its own target", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		up.record407("a.test:443", t0)
+		assert.True(t, up.authBlocked("a.test:443", t0))
+		assert.False(t, up.authBlocked("b.test:443", t0), "one destination's 407 may be the upstream's policy")
+	})
+	t.Run("distinct targets trip the latch", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		for _, tg := range []string{"a.test:443", "b.test:443"} {
+			up.record407(tg, t0)
+		}
+		assert.False(t, up.authBlocked("z.test:443", t0))
+		up.record407("a.test:443", t0) // the same target again is not a new one
+		assert.False(t, up.authBlocked("z.test:443", t0))
+		up.record407("c.test:443", t0)
+		assert.True(t, up.authBlocked("z.test:443", t0), "a wrong password fails everywhere")
+		assert.True(t, up.authBlocked("z.test:443", t0.Add(defaultAuthCooldown-time.Second)))
+		assert.False(t, up.authBlocked("z.test:443", t0.Add(defaultAuthCooldown)), "the latch expires")
+	})
+	t.Run("old 407s do not count", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		up.record407("a.test:443", t0)
+		up.record407("b.test:443", t0)
+		later := t0.Add(defaultAuthCooldown)
+		up.record407("c.test:443", later)
+		assert.False(t, up.authBlocked("z.test:443", later))
+		assert.False(t, up.authBlocked("a.test:443", later), "a target's own block expires too")
+	})
+	t.Run("without credentials a 407 never blocks every target", func(t *testing.T) {
+		up := mk(t, "http://proxy.test:3128")
+		for _, tg := range []string{"a.test:443", "b.test:443", "c.test:443", "d.test:443"} {
+			up.record407(tg, t0)
+		}
+		assert.False(t, up.authBlocked("z.test:443", t0))
+		assert.True(t, up.authBlocked("a.test:443", t0))
+	})
+	t.Run("zero AuthCooldown means the default", func(t *testing.T) {
+		u, err := ParseUpstream("http://u:p@proxy.test:3128", "", nil)
+		require.NoError(t, err)
+		up := &Upstream{URL: u.URL}
+		for _, tg := range []string{"a.test:443", "b.test:443", "c.test:443"} {
+			up.record407(tg, t0)
+		}
+		assert.True(t, up.authBlocked("z.test:443", t0.Add(defaultAuthCooldown-time.Second)))
+	})
+	t.Run("shared across proxies and recorded", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		a := unitProxy(t, Policy{Upstream: up}, nil, "203.0.113.2")
+		b := unitProxy(t, Policy{Upstream: up}, nil, "203.0.113.2")
+		assert.False(t, a.authLatched("a.test:443"))
+		up.record407("a.test:443", time.Now())
+		assert.True(t, b.authLatched("a.test:443"))
+		n, last := b.UpstreamErrors()
+		assert.Equal(t, 1, n)
+		assert.Equal(t, "407 (latched)", last)
+	})
+}
 
-	assert.False(t, a.authLatched())
-	a.latchAuth()
-	assert.True(t, b.authLatched(), "the latch is shared through the *Upstream")
-	n, last := b.UpstreamErrors()
-	assert.Equal(t, 1, n)
-	assert.Equal(t, "407 (latched)", last)
-	time.Sleep(100 * time.Millisecond)
-	assert.False(t, a.authLatched(), "the latch expires after AuthCooldown")
+func TestUpstreamAddrsCache(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	up, err := ParseUpstream("http://proxy.test:3128", "", nil)
+	require.NoError(t, err)
+	answer := []string{"203.0.113.2"}
+	lookups := 0
+	lookup := func() ([]netip.Addr, error) {
+		lookups++
+		var out []netip.Addr
+		for _, s := range answer {
+			out = append(out, netip.MustParseAddr(s))
+		}
+		return out, nil
+	}
+	dial, refuse, err := up.addrs(t0, lookup)
+	require.NoError(t, err)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("203.0.113.2")}, dial)
+	assert.Equal(t, dial, refuse)
+
+	answer = []string{"203.0.113.3"}
+	dial, _, err = up.addrs(t0.Add(upstreamCacheTTL-time.Second), lookup)
+	require.NoError(t, err)
+	assert.Equal(t, 1, lookups, "a fresh answer is reused")
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("203.0.113.2")}, dial)
+
+	dial, refuse, err = up.addrs(t0.Add(upstreamCacheTTL), lookup)
+	require.NoError(t, err)
+	assert.Equal(t, 2, lookups)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("203.0.113.3")}, dial)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("203.0.113.2"), netip.MustParseAddr("203.0.113.3")}, refuse,
+		"a rotating answer must not hide an earlier address from the refusal")
+
+	_, _, err = up.addrs(t0.Add(2*upstreamCacheTTL), func() ([]netip.Addr, error) { return nil, errors.New("down") })
+	assert.Error(t, err, "a stale cache does not hide a failed lookup")
 }
 
 func TestStartUpstreamChecks(t *testing.T) {
@@ -315,6 +404,39 @@ func TestStartUpstreamChecks(t *testing.T) {
 			assert.Equal(t, []string{net.JoinHostPort(s, "3128")}, dialled, s)
 			assert.True(t, p.isUpstreamAddr(netip.MustParseAddr(s)), s)
 		}
+	})
+	t.Run("upstream name resolved once, at Start", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "local", nil)
+		require.NoError(t, err)
+		answer := "203.0.113.2"
+		p := unitProxy(t, Policy{Upstream: up}, nil)
+		p.Lookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr(answer)}, nil
+		}
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		var dialled []string
+		p.Dial = func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialled = append(dialled, addr)
+			return nil, errors.New("no network in unit tests")
+		}
+		_, err = p.Start()
+		require.NoError(t, err)
+		defer func() { _ = p.Close() }()
+		answer = "127.0.0.1" // a rebinding answer after Start must change nothing
+		_, _ = p.dialUpstreamProxyRaw(context.Background())
+		assert.Equal(t, []string{"203.0.113.2:3128"}, dialled)
+	})
+	t.Run("by-name refused when any address seen for the upstream is on this host", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "upstream", nil)
+		require.NoError(t, err)
+		_, _, err = up.addrs(time.Now().Add(-time.Hour), func() ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		})
+		require.NoError(t, err)
+		p := unitProxy(t, Policy{Upstream: up}, map[string][]string{"p.test": {"203.0.113.2"}})
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		_, err = p.Start()
+		assert.ErrorContains(t, err, "on this host")
 	})
 	t.Run("upstream addresses normalised", func(t *testing.T) {
 		up, err := ParseUpstream("http://p.test:3128", "local", nil)

@@ -202,7 +202,7 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	if e.egressLookup != nil {
 		proxy.Lookup = e.egressLookup
 	}
-	proxyAddr, err := proxy.Start()
+	proxyAddr, err := proxy.StartContext(jobCtx)
 	if err != nil {
 		e.logger.Error(err, "failed to start egress proxy", log.KV{"id": jobId})
 		return &JobResult{Success: false, Error: err}

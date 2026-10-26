@@ -30,6 +30,8 @@ const (
 	tunnelIdle      = 60 * time.Second
 	maxConnections  = 128
 	respHeaderLimit = 30 * time.Second
+
+	upstreamIdlePerHost = 16 // idle connections kept per pool key on the upstream transports (net/http default: 2)
 )
 
 type LookupFunc func(ctx context.Context, host string) ([]netip.Addr, error)
@@ -105,7 +107,10 @@ func New(ownHost, ownDial string, poolFirst, poolCount int, policy Policy) *Prox
 }
 
 // Start listens on an ephemeral 127.0.0.1 port and returns its address.
-func (p *Proxy) Start() (string, error) {
+func (p *Proxy) Start() (string, error) { return p.StartContext(context.Background()) }
+
+// StartContext is Start whose upstream lookup ends with ctx (the job's context).
+func (p *Proxy) StartContext(ctx context.Context) (string, error) {
 	if p.Lookup == nil {
 		p.Lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
@@ -120,35 +125,23 @@ func (p *Proxy) Start() (string, error) {
 	}
 
 	p.local = map[netip.Addr]struct{}{}
-	addrs, err := p.InterfaceAddrs()
+	ifaces, err := p.InterfaceAddrs()
 	if err != nil {
 		return "", fmt.Errorf("listing local interface addresses: %w", err)
 	}
-	for _, a := range addrs {
-		var ip net.IP
-		switch v := a.(type) {
-		case *net.IPNet:
-			ip = v.IP
-		case *net.IPAddr:
-			ip = v.IP
-		}
-		if na, ok := netip.AddrFromSlice(ip); ok {
-			p.local[na.Unmap()] = struct{}{}
-		}
+	for _, a := range InterfaceIPs(ifaces) {
+		p.local[a] = struct{}{}
 	}
 
 	if up := p.policy.Upstream; up != nil {
-		addrs, err := p.resolve(context.Background(), up.Hostname())
+		dial, refuse, err := up.addrs(time.Now(), func() ([]netip.Addr, error) { return p.resolve(ctx, up.Hostname()) })
 		if err != nil {
 			// fail closed: without its addresses the upstream-address refusals cannot work
 			return "", errors.New("cannot resolve the upstream proxy")
 		}
-		onHost := func(a netip.Addr) bool { return a.IsLoopback() || a.IsUnspecified() || p.isLocal(a) }
-		for _, raw := range addrs {
-			a := norm(raw)
-			p.upstreamAddrs = append(p.upstreamAddrs, a)
-			p.upstreamDial = append(p.upstreamDial, raw)
-			if up.ByName && (onHost(raw) || onHost(a)) {
+		p.upstreamDial, p.upstreamAddrs = dial, refuse
+		for _, a := range append(append([]netip.Addr(nil), dial...), refuse...) {
+			if up.ByName && p.onThisHost(a) {
 				return "", errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
 			}
 		}
@@ -177,6 +170,7 @@ func (p *Proxy) Start() (string, error) {
 			DisableCompression:    true,
 			ResponseHeaderTimeout: respHeaderLimit,
 			IdleConnTimeout:       30 * time.Second,
+			MaxIdleConnsPerHost:   upstreamIdlePerHost,
 		}
 		// by-name routes: absolute-form request to the upstream, which resolves the name
 		p.upstreamTransport = &http.Transport{
@@ -185,9 +179,11 @@ func (p *Proxy) Start() (string, error) {
 				return p.dialUpstreamProxyRaw(ctx)
 			},
 			TLSClientConfig:       p.upstreamTLSConfig(),
+			TLSHandshakeTimeout:   dialTimeout,
 			DisableCompression:    true,
 			ResponseHeaderTimeout: respHeaderLimit,
 			IdleConnTimeout:       30 * time.Second,
+			MaxIdleConnsPerHost:   upstreamIdlePerHost, // http via a proxy pools every destination under one key
 		}
 	}
 	p.server = &http.Server{Handler: p, ReadHeaderTimeout: 10 * time.Second}
@@ -323,6 +319,15 @@ func (p *Proxy) isLocal(ip netip.Addr) bool {
 	return ok
 }
 
+// localAddr is isLocal for the address as given and in its normalised form (NAT64, 6to4, IPv4-compatible).
+func (p *Proxy) localAddr(ip netip.Addr) bool { return p.isLocal(ip) || p.isLocal(norm(ip)) }
+
+// onThisHost reports whether ip, as given or normalised, is loopback, unspecified or a local interface address.
+func (p *Proxy) onThisHost(ip netip.Addr) bool {
+	n := norm(ip)
+	return ip.IsLoopback() || ip.IsUnspecified() || n.IsLoopback() || n.IsUnspecified() || p.localAddr(ip)
+}
+
 func (p *Proxy) hardDenyPort(port int) bool {
 	return (port >= p.poolFirst && port < p.poolFirst+p.poolCount) || port == p.proxyPort ||
 		func() bool {
@@ -361,7 +366,7 @@ func (p *Proxy) check(host, port string, portNum int, addrs []netip.Addr) error 
 	// port is covered for local addresses only: refusing it for every name would break real sites on that port.
 	if p.hardDenyPort(portNum) || (p.upstreamPort != 0 && portNum == p.upstreamPort) {
 		for _, a := range addrs {
-			if a.IsLoopback() || a.IsUnspecified() || p.isLocal(a) {
+			if p.onThisHost(a) {
 				return errRefused
 			}
 		}
@@ -369,7 +374,7 @@ func (p *Proxy) check(host, port string, portNum int, addrs []netip.Addr) error 
 
 	if !p.policy.allowsHostPort(hostPortKey(host, port)) {
 		for _, a := range addrs {
-			if !p.policy.allowsPrefix(a) && (!IsPublicAddr(a) || p.isLocal(a)) {
+			if !p.policy.allowsPrefix(a) && (!IsPublicAddr(a) || p.localAddr(a)) {
 				return errRefused
 			}
 		}
@@ -449,24 +454,7 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 		if err != nil {
 			return route{}, errRefused
 		}
-		if err := p.check(host, port, portNum, addrs); err != nil {
-			return route{}, err
-		}
-		for _, a := range addrs {
-			if p.isUpstreamAddr(a) {
-				return route{}, errRefused
-			}
-		}
-		vetted := targetsOf(addrs, port)
-		for _, a := range addrs {
-			if !IsPublicAddr(a) || p.isLocal(norm(a)) {
-				return route{targets: vetted}, nil // admitted only by egressAllow: always direct
-			}
-		}
-		if up.direct(host, port, addrs) {
-			return route{targets: vetted}, nil
-		}
-		return route{targets: vetted, upstream: true}, nil
+		return p.vettedRoute(host, port, portNum, addrs, route{upstream: true})
 	}
 
 	// by-name route
@@ -484,6 +472,13 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 		}
 		return route{targets: name, upstream: true, byName: true}, nil
 	}
+	return p.vettedRoute(host, port, portNum, addrs, route{targets: name, upstream: true, byName: true})
+}
+
+// vettedRoute finishes a route whose addresses are known: check them, refuse the upstream's own addresses, keep
+// anything admitted only by egressAllow (non-public or local) and noProxy destinations direct, and otherwise hand it
+// to the upstream as via (its targets default to the vetted addresses).
+func (p *Proxy) vettedRoute(host, port string, portNum int, addrs []netip.Addr, via route) (route, error) {
 	if err := p.check(host, port, portNum, addrs); err != nil {
 		return route{}, err
 	}
@@ -494,14 +489,17 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 	}
 	vetted := targetsOf(addrs, port)
 	for _, a := range addrs {
-		if !IsPublicAddr(a) || p.isLocal(norm(a)) {
-			return route{targets: vetted}, nil
+		if !IsPublicAddr(a) || p.localAddr(a) {
+			return route{targets: vetted}, nil // admitted only by egressAllow: always direct
 		}
 	}
-	if up.direct(host, port, addrs) {
+	if p.policy.Upstream.direct(host, port, addrs) {
 		return route{targets: vetted}, nil
 	}
-	return route{targets: name, upstream: true, byName: true}, nil
+	if via.targets == nil {
+		via.targets = vetted
+	}
+	return via, nil
 }
 
 func (p *Proxy) dialTargets(ctx context.Context, targets []string) (net.Conn, error) {
@@ -526,8 +524,8 @@ func (p *Proxy) transportDial(ctx context.Context, _, _ string) (net.Conn, error
 }
 
 // tunnelDial ignores addr like transportDial: it asks the upstream for a tunnel to each vetted address in turn.
-// net/http hands dial functions a context detached from request cancellation, so a Close during the handshake is
-// bounded by respHeaderLimit rather than cut at once; there is no security impact, tunnel registration re-checks denyAll.
+// net/http hands dial functions a context detached from request cancellation; Close and Retire still cancel a dial
+// nobody waits on any more (closeIdle), and every phase of an upstream dial carries a deadline.
 func (p *Proxy) tunnelDial(ctx context.Context, _, _ string) (net.Conn, error) {
 	targets, _ := ctx.Value(targetsKey{}).([]string)
 	return p.dialViaUpstream(ctx, targets)
@@ -578,10 +576,12 @@ func (p *Proxy) dialUpstreamProxy(ctx context.Context) (net.Conn, error) {
 		return conn, nil
 	}
 	tc := tls.Client(conn, p.upstreamTLSConfig())
+	_ = conn.SetDeadline(time.Now().Add(dialTimeout)) // the dial context may be detached from cancellation
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, errUpstreamTLS
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return tc, nil
 }
 
@@ -592,36 +592,35 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// authLatched reports whether a recent 407 blocks further upstream use, and records the attempt if so.
-func (p *Proxy) authLatched() bool {
-	if time.Now().UnixNano() < p.policy.Upstream.authBlockedUntil.Load() {
+// authLatched reports whether a recent 407 blocks target ("host:port"), and records the attempt if so.
+func (p *Proxy) authLatched(target string) bool {
+	if p.policy.Upstream.authBlocked(target, time.Now()) {
 		p.upstreamFailed("407 (latched)")
 		return true
 	}
 	return false
 }
 
-func (p *Proxy) latchAuth() {
-	up := p.policy.Upstream
-	up.authBlockedUntil.Store(time.Now().Add(up.AuthCooldown).UnixNano())
-}
-
 // dialUpstream asks the upstream proxy for a tunnel to target and returns it once the upstream answers 200.
 func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, error) {
 	up := p.policy.Upstream
-	if p.authLatched() {
+	if p.authLatched(target) {
 		return nil, errUpstreamAuth
 	}
 	conn, err := p.dialUpstreamProxy(ctx)
 	if err != nil {
 		// fixed strings: err.Error() can contain the address
-		if errors.Is(err, errUpstreamTLS) {
+		switch {
+		case ctx.Err() != nil: // cancelled, not an upstream failure
+		case errors.Is(err, errUpstreamTLS):
 			p.upstreamFailed("tls handshake failed")
-		} else {
+		default:
 			p.upstreamFailed("dial failed")
 		}
 		return nil, err
 	}
+	// the deadline first: set after the AfterFunc, it could overwrite a cancellation that fired in between
+	_ = conn.SetDeadline(time.Now().Add(respHeaderLimit))
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
 
@@ -630,22 +629,25 @@ func (p *Proxy) dialUpstream(ctx context.Context, target string) (net.Conn, erro
 		pw, _ := up.URL.User.Password()
 		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(up.URL.User.Username()+":"+pw)))
 	}
-	_ = conn.SetDeadline(time.Now().Add(respHeaderLimit))
 	if err := req.Write(conn); err != nil {
 		_ = conn.Close()
-		p.upstreamFailed("no response")
+		if ctx.Err() == nil {
+			p.upstreamFailed("no response")
+		}
 		return nil, errors.New("upstream proxy request failed")
 	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		_ = conn.Close()
-		p.upstreamFailed("no response")
+		if ctx.Err() == nil {
+			p.upstreamFailed("no response")
+		}
 		return nil, errors.New("upstream proxy gave no response")
 	}
 	if resp.StatusCode == http.StatusProxyAuthRequired {
 		_ = conn.Close()
-		p.latchAuth()
+		up.record407(target, time.Now())
 		p.upstreamFailed(resp.Status)
 		return nil, errUpstreamAuth
 	}
@@ -754,7 +756,9 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	defer cancel()
 	outReq := req.Clone(context.WithValue(ctx, targetsKey{}, targets))
 	outReq.RequestURI = ""
-	outReq.Close = false // the client's connection semantics do not apply to the upstream hop
+	// the client's connection semantics do not apply to the upstream hop; but a pooled connection is keyed by
+	// targets[0] while the dial may have reached a later target, so never reuse one from a multi-address route
+	outReq.Close = len(targets) > 1
 	outReq.URL.Host = targets[0]
 	outReq.Host = req.Host // the zpt server checks Host against its own name
 	stripHopByHop(outReq.Header)
@@ -763,7 +767,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case rt.upstream && rt.byName:
 		transport = p.upstreamTransport
-		if p.authLatched() {
+		if p.authLatched(targets[0]) {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			return
 		}
@@ -773,7 +777,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 
 	resp, err := transport.RoundTrip(outReq)
 	// a forwarded 407 may come from the origin: relay it unchanged, never latch or record its status text
-	if err != nil && rt.upstream && rt.byName {
+	if err != nil && rt.upstream && rt.byName && ctx.Err() == nil {
 		p.upstreamFailed("request failed")
 	}
 	if err != nil {
