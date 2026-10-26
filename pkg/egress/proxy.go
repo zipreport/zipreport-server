@@ -770,13 +770,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	}
 
 	resp, err := transport.RoundTrip(outReq)
-	if err == nil && rt.upstream && rt.byName && resp.StatusCode == http.StatusProxyAuthRequired {
-		_ = resp.Body.Close()
-		p.latchAuth()
-		p.upstreamFailed(resp.Status)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
-	}
+	// a forwarded 407 may come from the origin: relay it unchanged, never latch or record its status text
 	if err != nil && rt.upstream && rt.byName {
 		p.upstreamFailed("request failed")
 	}

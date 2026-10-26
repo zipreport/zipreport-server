@@ -848,22 +848,24 @@ type upReq struct {
 // fakeUpstream is an in-process HTTP proxy. It reads requests raw: http.ReadRequest would rewrite Host on
 // absolute-form requests and hide what was actually sent.
 type fakeUpstream struct {
-	ln      net.Listener
-	port    int
-	conns   atomic.Int32
-	mu      sync.Mutex
-	reqs    []upReq
-	refuse  map[string]bool // CONNECT target -> 403
-	authAll bool            // 407 to everything
-	banner  string          // written in the same write as the CONNECT 200
-	backend string          // host:port every CONNECT is spliced to
+	ln         net.Listener
+	port       int
+	conns      atomic.Int32
+	mu         sync.Mutex
+	reqs       []upReq
+	refuse     map[string]bool // CONNECT target -> 403
+	authAll    bool            // 407 to everything
+	originAuth bool            // 407 to absolute-form requests only, as if relayed from the origin
+	banner     string          // written in the same write as the CONNECT 200
+	backend    string          // host:port every CONNECT is spliced to
 }
 
 type fakeUpstreamOpts struct {
-	refuse  map[string]bool
-	authAll bool
-	banner  string
-	tls     *tls.Config
+	refuse     map[string]bool
+	authAll    bool
+	originAuth bool
+	banner     string
+	tls        *tls.Config
 }
 
 func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream {
@@ -871,7 +873,7 @@ func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	f := &fakeUpstream{
-		port: l.Addr().(*net.TCPAddr).Port, refuse: o.refuse, authAll: o.authAll, banner: o.banner,
+		port: l.Addr().(*net.TCPAddr).Port, refuse: o.refuse, authAll: o.authAll, originAuth: o.originAuth, banner: o.banner,
 		backend: b.srv.Listener.Addr().String(),
 	}
 	f.ln = l
@@ -945,6 +947,10 @@ func (f *fakeUpstream) serve(c net.Conn) {
 			_, _ = io.Copy(c, up)
 			_ = up.Close()
 			return
+		}
+		if f.originAuth {
+			_, _ = c.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
+			continue
 		}
 		_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nupstream"))
 	}
@@ -1295,6 +1301,30 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
 	assert.Len(t, fu.requests(), 2, "after the cool-down the upstream is tried again")
+}
+
+func TestEgressUpstream_OriginAuthResponseDoesNotLatch(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{originAuth: true})
+	up := mkUpstream(t, fu.proxyURL("http", "", "example.com"), "upstream")
+	start := func() *proxyEnv {
+		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: routingDial(fu, &dialLog{})})
+	}
+	env1, env2 := start(), start()
+
+	resp, err := env1.client.Get("http://pub.test/x")
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, 407, resp.StatusCode, "a forwarded 407 is relayed unchanged")
+	n, last := env1.proxy.UpstreamErrors()
+	assert.Equal(t, 0, n)
+	assert.NotContains(t, last, "Proxy Authentication Required")
+
+	before := len(fu.requests())
+	assert.Equal(t, 200, connectCode(t, env2, "pub.test:443"), "another job must still reach the upstream")
+	assert.Equal(t, before+1, len(fu.requests()))
+	_, last = env2.proxy.UpstreamErrors()
+	assert.NotContains(t, last, "Proxy Authentication Required")
 }
 
 func TestEgressUpstream_NoProxyDialsDirect(t *testing.T) {
