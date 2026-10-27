@@ -861,6 +861,7 @@ type fakeUpstream struct {
 	ln         net.Listener
 	port       int
 	conns      atomic.Int32
+	closed     atomic.Int32 // connections ended
 	mu         sync.Mutex
 	reqs       []upReq
 	refuse     map[string]bool // CONNECT target -> 403
@@ -905,7 +906,7 @@ func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream
 }
 
 func (f *fakeUpstream) serve(c net.Conn) {
-	defer func() { _ = c.Close() }()
+	defer func() { _ = c.Close(); f.closed.Add(1) }()
 	br := bufio.NewReader(c)
 	for {
 		line, err := br.ReadString('\n')
@@ -1779,4 +1780,170 @@ func TestEgressParseUpstream(t *testing.T) {
 			assert.NotContains(t, err.Error(), "tok3n")
 		}
 	}
+}
+
+func TestEgressUpstream_ForwardAuthLatched(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	lookup := map[string][]string{
+		"pub.test": {"8.8.8.8"}, "b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"},
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+	// plain http rides a CONNECT tunnel in local mode: its 407s are keyed by destination like a page's CONNECTs
+	for i, u := range []string{"http://pub.test/x", "http://b.test/x", "http://c.test/x"} {
+		assert.Equal(t, http.StatusBadGateway, status(t, env.client, u))
+		assert.Len(t, fu.requests(), i+1, "one destination's 407 never blocks another")
+	}
+	assert.Equal(t, http.StatusBadGateway, status(t, env.client, "http://d.test/x"))
+	assert.Len(t, fu.requests(), 3, "latched: no further logins")
+}
+
+func TestEgressUpstream_ForwardMultiAddressConnNotReused(t *testing.T) {
+	h := startLocal(t, fakeUpstreamOpts{refuse: map[string]bool{"8.8.8.8:80": true}},
+		map[string][]string{"multi.test": {"8.8.8.8", "8.8.4.4"}, "other.test": {"8.8.8.8"}}, egress.Policy{})
+	require.Equal(t, 200, status(t, h.env.client, "http://multi.test/a"))
+	require.Equal(t, 200, status(t, h.env.client, "http://multi.test/c"), "the same name reuses its tunnel")
+	// the tunnel above reached 8.8.4.4; other.test (8.8.8.8 only) must not be served on it
+	assert.Equal(t, http.StatusBadGateway, status(t, h.env.client, "http://other.test/b"))
+	assert.Equal(t, []string{"multi.test /a", "multi.test /c"}, h.be.requests())
+	assert.Equal(t, []string{"8.8.8.8:80", "8.8.4.4:80", "8.8.8.8:80"}, h.fu.targets())
+}
+
+// scriptedUpstream reads one request head per connection, writes reply (nothing when empty) and reports when the
+// egress proxy ends the connection.
+type scriptedUpstream struct {
+	port   int
+	got    chan struct{}
+	closed chan struct{}
+}
+
+func newScriptedUpstream(t *testing.T, reply string) *scriptedUpstream {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	s := &scriptedUpstream{port: l.Addr().(*net.TCPAddr).Port, got: make(chan struct{}, 8), closed: make(chan struct{}, 8)}
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		_ = l.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			go func() {
+				br := bufio.NewReader(c)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if line == "\r\n" {
+						break
+					}
+				}
+				s.got <- struct{}{}
+				if reply != "" {
+					_, _ = c.Write([]byte(reply))
+				}
+				_, _ = io.Copy(io.Discard, br)
+				s.closed <- struct{}{}
+			}()
+		}
+	}()
+	return s
+}
+
+func TestEgressUpstream_SilentUpstreamCutOnClose(t *testing.T) {
+	su := newScriptedUpstream(t, "")
+	up := mkUpstream(t, fmt.Sprintf("http://127.0.0.1:%d", su.port), "local")
+	env := startProxy(t, proxyOpts{
+		policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}}, dial: routingDial(nil, &dialLog{}),
+	})
+	c, err := net.Dial("tcp", env.addr)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	_, err = fmt.Fprintf(c, "CONNECT pub.test:443 HTTP/1.1\r\nHost: pub.test:443\r\n\r\n")
+	require.NoError(t, err)
+	select {
+	case <-su.got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the CONNECT never reached the upstream")
+	}
+	require.NoError(t, env.proxy.Close())
+	select {
+	case <-su.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the connection to a silent upstream outlived the proxy")
+	}
+}
+
+func TestEgressUpstream_CloseDropsIdleUpstreamConns(t *testing.T) {
+	for _, mode := range []string{"local", "by-name"} {
+		t.Run(mode, func(t *testing.T) {
+			start, lookup := startLocal, map[string][]string{"pub.test": {"8.8.8.8"}}
+			if mode == "by-name" {
+				start, lookup = startByName, byNameLookup
+			}
+			h := start(t, fakeUpstreamOpts{}, lookup, egress.Policy{})
+			require.Equal(t, 200, status(t, h.env.client, "http://pub.test/x"))
+			require.Equal(t, int32(1), h.fu.conns.Load())
+			require.NoError(t, h.env.proxy.Close())
+			assert.Eventually(t, func() bool { return h.fu.closed.Load() == 1 }, 2*time.Second, 10*time.Millisecond,
+				"the pooled upstream connection outlived the proxy")
+		})
+	}
+}
+
+func TestEgressUpstream_NonOKConnectStatus(t *testing.T) {
+	for _, reply := range []string{
+		"HTTP/1.1 204 No Content\r\n\r\n",
+		"HTTP/1.1 302 Found\r\nLocation: http://pub.test/\r\nContent-Length: 0\r\n\r\n",
+		"HTTP/1.1 101 Switching Protocols\r\n\r\n",
+	} {
+		code := strings.Fields(reply)[1]
+		t.Run(code, func(t *testing.T) {
+			su := newScriptedUpstream(t, reply)
+			up := mkUpstream(t, fmt.Sprintf("http://127.0.0.1:%d", su.port), "local")
+			env := startProxy(t, proxyOpts{
+				policy: egress.Policy{Upstream: up}, lookup: map[string][]string{"pub.test": {"8.8.8.8"}}, dial: routingDial(nil, &dialLog{}),
+			})
+			assert.Equal(t, http.StatusBadGateway, connectCode(t, env, "pub.test:443"), "only a 200 opens a tunnel")
+			n, last := env.proxy.UpstreamErrors()
+			assert.Equal(t, 1, n)
+			assert.True(t, strings.HasPrefix(last, code), last)
+		})
+	}
+}
+
+func TestEgressUpstream_AuthKeyCanonical(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	ips := map[string]string{"pub.test": "8.8.8.8", "d.test": "4.4.4.4"}
+	lookup := func(_ context.Context, host string) ([]netip.Addr, error) {
+		ip, ok := ips[strings.ToLower(host)]
+		if !ok {
+			return nil, errors.New("no such host")
+		}
+		return []netip.Addr{netip.MustParseAddr(ip)}, nil
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookupFn: lookup, dial: routingDial(fu, &dialLog{})})
+	for _, target := range []string{"PUB.test:443", "pub.TEST:443", "pub.test:443"} {
+		assert.Equal(t, http.StatusBadGateway, connectCode(t, env, target))
+	}
+	assert.Len(t, fu.requests(), 1, "one destination, however its name is spelled")
+	assert.Equal(t, http.StatusBadGateway, connectCode(t, env, "d.test:443"))
+	assert.Len(t, fu.requests(), 2, "case variants of one name must not trip the process-wide latch")
 }

@@ -23,16 +23,17 @@ import (
 )
 
 const (
-	maxSamples      = 16
-	maxSampleLen    = 120
-	lookupTimeout   = 5 * time.Second
-	dialTimeout     = 10 * time.Second
-	tunnelIdle      = 60 * time.Second
-	maxConnections  = 128
-	respHeaderLimit = 30 * time.Second
+	maxSamples     = 16
+	maxSampleLen   = 120
+	lookupTimeout  = 5 * time.Second
+	dialTimeout    = 10 * time.Second
+	tunnelIdle     = 60 * time.Second
+	maxConnections = 128
 
 	upstreamIdlePerHost = 16 // idle connections kept per pool key on the upstream transports (net/http default: 2)
 )
+
+var respHeaderLimit = 30 * time.Second // var: test seam
 
 type LookupFunc func(ctx context.Context, host string) ([]netip.Addr, error)
 type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)

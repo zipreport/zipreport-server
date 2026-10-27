@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"testing"
 	"time"
 
@@ -550,6 +552,28 @@ func TestStartUpstreamChecks(t *testing.T) {
 		_, err = p.Start()
 		assert.ErrorContains(t, err, "on this host")
 	})
+	t.Run("an earlier upstream address stays refused but is never dialled", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "local", nil)
+		require.NoError(t, err)
+		_, _, err = up.addrs(time.Now().Add(-time.Hour), func() ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("203.0.113.2")}, nil
+		})
+		require.NoError(t, err)
+		p := unitProxy(t, Policy{Upstream: up}, map[string][]string{"p.test": {"203.0.113.3"}})
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		var dialled []string
+		p.Dial = func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialled = append(dialled, addr)
+			return nil, errors.New("no network in unit tests")
+		}
+		_, err = p.Start()
+		require.NoError(t, err)
+		defer func() { _ = p.Close() }()
+		_, err = p.plan(context.Background(), "203.0.113.2", "22")
+		assert.Error(t, err, "a page cannot reach the upstream's earlier address, on any port")
+		_, _ = p.dialUpstreamProxyRaw(context.Background())
+		assert.Equal(t, []string{"203.0.113.3:3128"}, dialled, "credentials go only to the current address")
+	})
 	t.Run("lookup ends with the job context", func(t *testing.T) {
 		up, err := ParseUpstream("http://p.test:3128", "local", nil)
 		require.NoError(t, err)
@@ -578,4 +602,45 @@ func TestStartUpstreamChecks(t *testing.T) {
 		assert.Equal(t, 3128, p.upstreamPort)
 		assert.True(t, p.isUpstreamAddr(netip.MustParseAddr("64:ff9b::cb00:7102")))
 	})
+}
+
+func TestForwardTunnelResponseWaitBounded(t *testing.T) {
+	// an upstream that reads the CONNECT and never answers
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(io.Discard, c); _ = c.Close() }()
+		}
+	}()
+	old := respHeaderLimit
+	respHeaderLimit = 200 * time.Millisecond
+	defer func() { respHeaderLimit = old }()
+
+	up, err := ParseUpstream(fmt.Sprintf("http://p.test:%d", l.Addr().(*net.TCPAddr).Port), "local", nil)
+	require.NoError(t, err)
+	p := unitProxy(t, Policy{Upstream: up}, map[string][]string{"p.test": {"127.0.0.1"}, "pub.test": {"8.8.8.8"}})
+	p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+	addr, err := p.Start()
+	require.NoError(t, err)
+	defer func() { _ = p.Close() }()
+	pu, err := url.Parse("http://" + addr)
+	require.NoError(t, err)
+	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(pu), DisableKeepAlives: true}}
+
+	// the tunnel dial of a plain-http forward does not end with the request, so only the deadline bounds it
+	start := time.Now()
+	resp, err := c.Get("http://pub.test/x")
+	require.NoError(t, err, "the proxy answers before the client gives up")
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Less(t, time.Since(start), 3*time.Second)
+	n, last := p.UpstreamErrors()
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "no response", last)
 }
