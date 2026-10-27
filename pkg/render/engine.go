@@ -202,7 +202,10 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	if e.egressLookup != nil {
 		proxy.Lookup = e.egressLookup
 	}
-	proxyAddr, err := proxy.Start()
+	proxyAddr, err := proxy.StartContext(jobCtx)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		err = jobCtxErr(jobCtx) // the job ended during the upstream lookup: not the upstream's fault
+	}
 	if err != nil {
 		e.logger.Error(err, "failed to start egress proxy", log.KV{"id": jobId})
 		return &JobResult{Success: false, Error: err}
@@ -228,6 +231,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		}
 		if n, s := proxy.Blocked(); n > 0 {
 			e.logger.Warn("blocked network requests from rendered page", log.KV{"id": jobId, "count": n, "samples": s})
+		}
+		if n, last := proxy.UpstreamErrors(); n > 0 {
+			e.logger.Warn("upstream proxy failures", log.KV{"id": jobId, "count": n, "last": last})
 		}
 	}()
 

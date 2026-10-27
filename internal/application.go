@@ -2,7 +2,10 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"time"
 
 	"zipreport-server/internal/apiserver"
@@ -83,6 +86,12 @@ func (z *ZipReport) Build(appName string) {
 	}
 	zptEngine := render.NewEngine(engineCtx, cfg.ZipReport.Concurrency, cfg.ZipReport.BaseHttpPort, metrics, z.logger)
 	z.AbortFatal(ConfigureEngine(zptEngine, cfg))
+	if up := zptEngine.EgressPolicy().Upstream; up != nil {
+		z.logger.Info("egress upstream proxy enabled", upstreamLogKV(up))
+		if up.ByName {
+			z.checkByNameUpstream(up)
+		}
+	}
 	if cfg.ZipReport.EnableHttpDebugging && HttpDebugSuppressedAt(cfg.Logging.Level) {
 		z.logger.Warn("enableHttpDebugging is on but log.level is above info; request lines will not be written")
 	}
@@ -143,6 +152,43 @@ func (z *ZipReport) Start() {
 	)
 }
 
+// upstreamLogKV is the only description of the upstream that is logged: never its URL, which may carry userinfo.
+func upstreamLogKV(up *egress.Upstream) log.KV {
+	resolve := "local"
+	if up.ByName {
+		resolve = "upstream"
+	}
+	return log.KV{"upstream": up.Endpoint(), "resolve": resolve}
+}
+
+// upstreamOnThisHost reports whether any of the upstream's addresses is loopback, unspecified or an interface address.
+func upstreamOnThisHost(addrs []netip.Addr, ifaces []net.Addr) bool {
+	local := egress.InterfaceIPs(ifaces)
+	for _, a := range addrs {
+		if egress.OnThisHost(a, local) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkByNameUpstream refuses resolve "upstream" with an upstream on this host and warns about its trade-off.
+func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip", up.Hostname())
+	ifaces, ierr := net.InterfaceAddrs()
+	if lerr != nil || ierr != nil {
+		z.logger.Warn("cannot resolve the upstream proxy at startup; each job will check it")
+		return
+	}
+	if upstreamOnThisHost(addrs, ifaces) {
+		z.AbortFatal(errors.New("zipReport.upstreamProxy: resolve \"upstream\" cannot be used with an upstream proxy on this host"))
+		return
+	}
+	z.logger.Warn("zipReport.upstreamProxy.resolve is \"upstream\": the upstream proxy decides where host names go, so a rendered page can reach anything the upstream can reach; configure destination ACLs on the upstream and never use this mode with an upstream that shares this server's network namespace")
+}
+
 // ConfigureEngine applies the zipReport settings to the render engine.
 func ConfigureEngine(e *render.Engine, cfg *Config) error {
 	if cfg.ZipReport.EnableConsoleLogging {
@@ -162,6 +208,11 @@ func ConfigureEngine(e *render.Engine, cfg *Config) error {
 		}
 		policy.Allow = append(policy.Allow, rule)
 	}
+	up, err := egress.ParseUpstream(cfg.ZipReport.UpstreamProxy.URL, cfg.ZipReport.UpstreamProxy.Resolve, cfg.ZipReport.UpstreamProxy.NoProxy)
+	if err != nil {
+		return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+	}
+	policy.Upstream = up
 	e.SetEgressPolicy(policy)
 	e.SetServerTimeouts(cfg.ZipReport.ServerTimeouts())
 	return nil

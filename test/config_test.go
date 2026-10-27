@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -305,4 +306,110 @@ func TestNewApiServer_ForwardedHeadersNeedTrustedProxies(t *testing.T) {
 	assert.Equal(t, "192.0.2.1", clientIP(t, nil, "X-Forwarded-For", "203.0.113.9"))
 	assert.Equal(t, "192.0.2.1", clientIP(t, nil, "X-Real-IP", "203.0.113.9"))
 	assert.Equal(t, "203.0.113.9", clientIP(t, []string{"192.0.2.0/24"}, "X-Forwarded-For", "203.0.113.9"))
+}
+
+func TestConfig_UpstreamProxyValidation(t *testing.T) {
+	cfg := configWithSecret(strongSecret)
+	cfg.ZipReport.UpstreamProxy.URL = "http://user:s3cret@proxy.test:3128"
+	assert.NoError(t, cfg.Validate())
+
+	cfg.ZipReport.UpstreamProxy.URL = "tok3n:s3cret@proxy.test:3128"
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zipReport.upstreamProxy")
+	assert.NotContains(t, err.Error(), "s3cret")
+	assert.NotContains(t, err.Error(), "tok3n")
+
+	cfg = configWithSecret(strongSecret)
+	cfg.ZipReport.UpstreamProxy.URL = "http://127.0.0.1:3128"
+	assert.NoError(t, cfg.Validate(), "loopback upstream outside every reserved port")
+
+	cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://127.0.0.1:%d", cfg.ZipReport.BaseHttpPort+1)
+	cfg.ZipReport.Concurrency = 4
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides")
+
+	cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://localhost:%d", cfg.ApiServer.Port)
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides")
+
+	cfg.ZipReport.EnableMetrics = true
+	cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://127.0.0.1:%d", cfg.Prometheus.Port)
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides")
+
+	cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://proxy.test:%d", cfg.Prometheus.Port)
+	assert.NoError(t, cfg.Validate(), "a remote upstream may use any port")
+
+	cfg = configWithSecret(strongSecret)
+	cfg.ZipReport.Concurrency = 4
+	first, last := cfg.ZipReport.BaseHttpPort, cfg.ZipReport.BaseHttpPort+3
+	for _, c := range []struct {
+		host    string
+		port    int
+		metrics bool
+		collide bool
+	}{
+		{"127.0.0.1", first, false, true},
+		{"127.0.0.1", last, false, true},
+		{"127.0.0.1", last + 1, false, false},
+		{"127.0.0.1", first - 1, false, false},
+		{"[::1]", cfg.ApiServer.Port, false, true},
+		{"0.0.0.0", cfg.ApiServer.Port, false, true},
+		{"127.0.0.2", cfg.ApiServer.Port, false, true},
+		{"127.0.0.1", cfg.Prometheus.Port, false, false},
+		{"127.0.0.1", cfg.Prometheus.Port, true, true},
+	} {
+		cfg.ZipReport.EnableMetrics = c.metrics
+		cfg.ZipReport.UpstreamProxy.URL = fmt.Sprintf("http://%s:%d", c.host, c.port)
+		err := cfg.Validate()
+		if c.collide {
+			assert.ErrorContains(t, err, "collides", cfg.ZipReport.UpstreamProxy.URL)
+		} else {
+			assert.NoError(t, err, cfg.ZipReport.UpstreamProxy.URL)
+		}
+	}
+}
+
+func TestConfig_UpstreamProxyEnvOverride(t *testing.T) {
+	cfg := configWithSecret(strongSecret)
+	t.Setenv("ZIPREPORT_UPSTREAM_PROXY", "http://p.test:3128")
+	cfg.ApplyEnvOverrides()
+	assert.Equal(t, "http://p.test:3128", cfg.ZipReport.UpstreamProxy.URL)
+}
+
+func TestConfig_HTTPProxyEnvIgnored(t *testing.T) {
+	cfg := configWithSecret(strongSecret)
+	t.Setenv("ZIPREPORT_UPSTREAM_PROXY", "") // hermetic: a value exported in the shell would fail this test
+	t.Setenv("HTTP_PROXY", "http://env.test:3128")
+	t.Setenv("HTTPS_PROXY", "http://env.test:3128")
+	t.Setenv("NO_PROXY", "example.com")
+	cfg.ApplyEnvOverrides()
+	assert.Equal(t, "", cfg.ZipReport.UpstreamProxy.URL)
+	assert.Empty(t, cfg.ZipReport.UpstreamProxy.NoProxy)
+}
+
+func TestConfigureEngine_UpstreamPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping browser-based test in short mode")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := render.NewEngine(ctx, 1, 31810, sharedMetrics, nil)
+	defer engine.Shutdown()
+
+	cfg := configWithSecret(strongSecret)
+	require.NoError(t, internal.ConfigureEngine(engine, cfg))
+	assert.Nil(t, engine.EgressPolicy().Upstream, "control: unset by default")
+
+	cfg.ZipReport.UpstreamProxy.URL = "http://p.test:3128"
+	cfg.ZipReport.UpstreamProxy.Resolve = "upstream"
+	require.NoError(t, internal.ConfigureEngine(engine, cfg))
+	up := engine.EgressPolicy().Upstream
+	require.NotNil(t, up)
+	assert.True(t, up.ByName)
+	assert.Equal(t, "p.test:3128", up.URL.Host)
 }
