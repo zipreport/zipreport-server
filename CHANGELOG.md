@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- New `zipReport.upstreamProxy` (`url`, `resolve`, `noProxy`) chains the per-job egress proxy to an operator's HTTP(S) proxy. Only public destinations use the upstream; by default it receives the vetted IP, never a name. `resolve: "upstream"` hands it host names and moves the security boundary to the upstream, so it needs destination ACLs there (see `docs/configuration.md`)
+- New `zipReport.upstreamProxy` (`url`, `resolve`, `noProxy`) chains the per-job egress proxy to an operator's HTTP(S) proxy. Only public destinations use the upstream; by default it receives the vetted IP, never a name. `resolve: "upstream"` hands it host names and moves the security boundary to the upstream, so it needs destination ACLs there (see "Upstream proxy" in `docs/configuration.md`)
 - `ZIPREPORT_UPSTREAM_PROXY` overrides `zipReport.upstreamProxy.url` so the proxy password can stay out of the config file
 
 ### Fixed
