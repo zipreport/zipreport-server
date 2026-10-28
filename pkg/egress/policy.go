@@ -193,6 +193,14 @@ func (u *Upstream) refusals(current []netip.Addr) []netip.Addr {
 	return refuse
 }
 
+// refusalsCached is the refusal list without a lookup: the addresses the upstream's name resolved to recently, in
+// any job, plus the cached answer; stale reports whether that answer is older than upstreamCacheTTL.
+func (u *Upstream) refusalsCached(now time.Time) (refuse []netip.Addr, stale bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.refusals(u.cached), u.cached == nil || now.Sub(u.cachedAt) >= upstreamCacheTTL
+}
+
 // ParseUpstream validates the zipReport.upstreamProxy settings. An empty rawURL disables chaining and returns nil.
 // Errors never include rawURL or any part of it: it may carry a password.
 func ParseUpstream(rawURL, resolve string, noProxy []string) (*Upstream, error) {
@@ -253,6 +261,17 @@ func (u *Upstream) Endpoint() string {
 // Hostname returns the upstream host, lower-cased, without a trailing dot.
 func (u *Upstream) Hostname() string {
 	return strings.TrimSuffix(strings.ToLower(u.URL.Hostname()), ".")
+}
+
+// LookupName returns the upstream host as it is resolved: Hostname(), plus one trailing dot when the operator wrote
+// the name rooted ("proxy.corp."), so the resolver's search domains are skipped. An IP literal comes back without
+// the dot: it is never a DNS query.
+func (u *Upstream) LookupName() string {
+	h := u.Hostname()
+	if _, err := netip.ParseAddr(h); err == nil || !strings.HasSuffix(u.URL.Hostname(), ".") {
+		return h
+	}
+	return strings.TrimRight(h, ".") + "."
 }
 
 var loopbackNames = map[string]bool{

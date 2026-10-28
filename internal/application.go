@@ -176,7 +176,7 @@ func upstreamOnThisHost(addrs []netip.Addr, ifaces []net.Addr) bool {
 func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	addrs, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip", up.Hostname())
+	addrs, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip", up.LookupName())
 	ifaces, ierr := net.InterfaceAddrs()
 	if lerr != nil || ierr != nil {
 		z.logger.Warn("cannot resolve the upstream proxy at startup; each job will check it")

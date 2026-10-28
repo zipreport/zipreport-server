@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The egress proxy no longer reuses a plain-http connection pooled for a name with several addresses: the connection may have reached a later address and could then serve another name resolving to the first one (reachable when `egressAllow` admits such a mixed answer)
 - The egress proxy's local-address checks also catch the NAT64, 6to4 and IPv4-compatible forms of this host's own addresses (on a reserved port these could reach the API or metrics port through a hairpinning NAT64 gateway)
+- An upstream proxy name written with a trailing dot is looked up as written, so resolver search domains (e.g. Kubernetes `ndots`) cannot redirect it
+- A running job also refuses an upstream proxy address its name started resolving to after the job began
 
 ## [3.0.0]
 
