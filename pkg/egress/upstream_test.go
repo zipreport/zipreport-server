@@ -61,6 +61,18 @@ func TestUpstreamEndpointAndHostname(t *testing.T) {
 	assert.Equal(t, "https://proxy.example.com:8443", up.Endpoint())
 	assert.NotContains(t, up.Endpoint(), "tok3n")
 	assert.Equal(t, "proxy.example.com", up.Hostname())
+	assert.Equal(t, "proxy.example.com.", up.LookupName(), "a rooted name stays rooted for DNS")
+	for raw, want := range map[string]string{
+		"http://Proxy.Corp:3128":    "proxy.corp",
+		"http://Proxy.Corp..:3128":  "proxy.corp.",
+		"http://127.0.0.1.:3128":    "127.0.0.1",
+		"http://203.0.113.2:3128":   "203.0.113.2",
+		"http://[2001:db8::1]:3128": "2001:db8::1",
+	} {
+		u, err := ParseUpstream(raw, "", nil)
+		require.NoError(t, err)
+		assert.Equal(t, want, u.LookupName(), raw)
+	}
 	assert.False(t, up.ByName)
 	assert.Equal(t, 5*time.Minute, up.AuthCooldown)
 }
@@ -505,6 +517,26 @@ func TestStartUpstreamChecks(t *testing.T) {
 			_ = p.Close()
 			assert.Equal(t, []string{net.JoinHostPort(s, "3128")}, dialled, s)
 			assert.True(t, p.isUpstreamAddr(netip.MustParseAddr(s)), s)
+		}
+	})
+	t.Run("rooted upstream name looked up rooted", func(t *testing.T) {
+		up, err := ParseUpstream("https://Proxy.Corp.:3128", "local", nil)
+		require.NoError(t, err)
+		p := unitProxy(t, Policy{Upstream: up}, nil)
+		var names []string
+		p.Lookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+			names = append(names, host)
+			return []netip.Addr{netip.MustParseAddr("203.0.113.2")}, nil
+		}
+		p.InterfaceAddrs = ifaceAddrs("192.0.2.1")
+		_, err = p.Start()
+		require.NoError(t, err)
+		defer func() { _ = p.Close() }()
+		assert.Equal(t, []string{"proxy.corp."}, names, "a trailing dot keeps search domains out of the lookup")
+		assert.Equal(t, "proxy.corp", p.upstreamTLSConfig().ServerName, "SNI never carries the dot")
+		for _, h := range []string{"proxy.corp", "PROXY.CORP."} {
+			_, err := p.plan(context.Background(), h, "443")
+			assert.ErrorIs(t, err, errRefused, h)
 		}
 	})
 	t.Run("upstream name resolved once, at Start", func(t *testing.T) {

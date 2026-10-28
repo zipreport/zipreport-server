@@ -255,6 +255,17 @@ func (u *Upstream) Hostname() string {
 	return strings.TrimSuffix(strings.ToLower(u.URL.Hostname()), ".")
 }
 
+// LookupName returns the upstream host as it is resolved: Hostname(), plus one trailing dot when the operator wrote
+// the name rooted ("proxy.corp."), so the resolver's search domains are skipped. An IP literal comes back without
+// the dot: it is never a DNS query.
+func (u *Upstream) LookupName() string {
+	h := u.Hostname()
+	if _, err := netip.ParseAddr(h); err == nil || !strings.HasSuffix(u.URL.Hostname(), ".") {
+		return h
+	}
+	return strings.TrimRight(h, ".") + "."
+}
+
 var loopbackNames = map[string]bool{
 	"localhost": true, "localhost.localdomain": true, "localhost4": true, "localhost4.localdomain4": true,
 	"localhost6": true, "localhost6.localdomain6": true, "ip6-localhost": true, "ip6-loopback": true,

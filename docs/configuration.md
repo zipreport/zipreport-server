@@ -187,7 +187,9 @@ http_access deny private_dst
 **Operations**
 
 - The upstream's name is resolved when a job starts (answers are reused for 30 s). While it cannot be resolved, every
-  render fails.
+  render fails. A name written with a trailing dot (`proxy.corp.`) is looked up exactly as written, without the
+  resolver's search domains; it must then resolve in DNS as written (an `/etc/hosts` entry matches a rooted name
+  only in the Docker image's pure-Go resolver, not through glibc).
 - Upstream failures are counted and logged per job (relayed by-name responses are not). An upstream error page can be
   relayed to the page and so appear in the PDF.
 - If the upstream is on this host (a loopback name or address, or `0.0.0.0`), its port must not be `apiServer.port`,

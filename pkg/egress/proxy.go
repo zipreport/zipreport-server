@@ -139,7 +139,7 @@ func (p *Proxy) StartContext(ctx context.Context) (string, error) {
 	}
 
 	if up := p.policy.Upstream; up != nil {
-		dial, refuse, err := up.addrs(time.Now(), func() ([]netip.Addr, error) { return p.resolve(ctx, up.Hostname()) })
+		dial, refuse, err := up.addrs(time.Now(), func() ([]netip.Addr, error) { return p.resolve(ctx, up.LookupName()) })
 		if err != nil {
 			// fail closed: without its addresses the upstream-address refusals cannot work
 			if ctx.Err() != nil {
