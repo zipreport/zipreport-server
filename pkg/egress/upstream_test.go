@@ -44,7 +44,8 @@ func TestNamesThisHost(t *testing.T) {
 		"::ffff:127.0.0.1", "64:ff9b::7f00:1"} {
 		assert.True(t, NamesThisHost(h), h)
 	}
-	for _, h := range []string{"", "proxy.test", "proxy.test.", "203.0.113.2", "203.0.113.2.", "127.0.0.1.example.com"} {
+	for _, h := range []string{"", "proxy.test", "proxy.test.", "203.0.113.2", "203.0.113.2.", "127.0.0.1.example.com",
+		"localhost..", "127.0.0.1.."} {
 		assert.False(t, NamesThisHost(h), h)
 	}
 }
@@ -495,7 +496,7 @@ func TestPlanRefusesUpstreamAddressesSeenAfterStart(t *testing.T) {
 		assert.Equal(t, route{targets: []string{"8.8.8.8:443"}, upstream: true}, got, "other public addresses still go upstream")
 		_, err = j.p.plan(ctx, "203.0.113.2", "443")
 		assert.ErrorIs(t, err, errRefused, "the address vetted at Start stays refused")
-		assert.Equal(t, 2, *j.lookups, "one refresh per upstreamCacheTTL")
+		assert.Equal(t, 2, *j.lookups, "the refreshed shared answer is fresh: no further lookup")
 
 		// upstreamCacheTTL later the job refreshes again
 		j.p.upstreamCheckedAt.Store(int64(time.Since(monoEpoch)) - int64(upstreamCacheTTL))
@@ -542,7 +543,9 @@ func TestPlanRefusesUpstreamAddressesSeenAfterStart(t *testing.T) {
 		require.NoError(t, err)
 		answer, fail := "203.0.113.2", false
 		j := start(t, up, &answer, &fail)
+		entered := make(chan struct{})
 		j.p.Lookup = func(lctx context.Context, _ string) ([]netip.Addr, error) {
+			close(entered)
 			<-lctx.Done() // a resolver that never answers
 			return nil, lctx.Err()
 		}
@@ -554,6 +557,11 @@ func TestPlanRefusesUpstreamAddressesSeenAfterStart(t *testing.T) {
 		begin := time.Now()
 		_, _ = j.p.plan(ctx, "8.8.8.8", "443")
 		assert.Less(t, time.Since(begin), time.Second, "not left to lookupTimeout")
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the refresh never started")
+		}
 	})
 	t.Run("a plan while the answer is fresh does not use up the refresh", func(t *testing.T) {
 		up, err := ParseUpstream("http://p.test:3128", "local", nil)
@@ -617,6 +625,28 @@ func TestPlanRefusesUpstreamAddressesSeenAfterStart(t *testing.T) {
 		require.NotContains(t, refuse, netip.MustParseAddr("203.0.113.2"), "evicted from the shared history")
 		_, err = j.p.plan(ctx, "203.0.113.2", "443")
 		assert.ErrorIs(t, err, errRefused, "still in this job's Start snapshot")
+	})
+	t.Run("an address seen before Start stays refused after eviction from the history", func(t *testing.T) {
+		up, err := ParseUpstream("http://p.test:3128", "local", nil)
+		require.NoError(t, err)
+		_, _, err = up.addrs(time.Now(), func() ([]netip.Addr, error) { // an earlier answer, e.g. from another job
+			return []netip.Addr{netip.MustParseAddr("203.0.113.5")}, nil
+		})
+		require.NoError(t, err)
+		stale(up)
+		answer, fail := "203.0.113.2", false
+		j := start(t, up, &answer, &fail) // dials 203.0.113.2; its snapshot also refuses 203.0.113.5
+		for i := range maxSeenUpstreamAddrs + 6 {
+			stale(up)
+			_, _, err := up.addrs(time.Now(), func() ([]netip.Addr, error) {
+				return []netip.Addr{netip.AddrFrom4([4]byte{198, 51, 100, byte(i)})}, nil
+			})
+			require.NoError(t, err)
+		}
+		refuse, _ := up.refusalsCached(time.Now())
+		require.NotContains(t, refuse, netip.MustParseAddr("203.0.113.5"), "evicted from the shared history")
+		_, err = j.p.plan(ctx, "203.0.113.5", "443")
+		assert.ErrorIs(t, err, errRefused, "still in this job's Start snapshot, though Start never dialled it")
 	})
 }
 

@@ -374,6 +374,11 @@ func TestConfig_UpstreamProxyValidation(t *testing.T) {
 			assert.NoError(t, err, cfg.ZipReport.UpstreamProxy.URL)
 		}
 	}
+
+	cfg = configWithSecret(strongSecret)
+	cfg.ZipReport.UpstreamProxy.URL = "http://127.0.0.1.:3128"
+	cfg.ZipReport.UpstreamProxy.Resolve = "upstream"
+	assert.ErrorContains(t, cfg.Validate(), "on this host", "a dotted on-host literal is refused at validation")
 }
 
 func TestConfig_UpstreamProxyEnvOverride(t *testing.T) {
