@@ -1741,6 +1741,7 @@ func TestEgressParseUpstream(t *testing.T) {
 		{"http://proxy:3128", "local", []string{"8.8.8.0/24", "cdn.example.com:443"}},
 		{"", "", nil},
 		{"", "local", nil},
+		{"http://127.0.0.1.:3128", "local", nil},
 	} {
 		up, err := egress.ParseUpstream(c.url, c.resolve, c.noProxy)
 		assert.NoError(t, err, c.url)
@@ -1771,6 +1772,8 @@ func TestEgressParseUpstream(t *testing.T) {
 		{"http://localhost:3128", "upstream", nil},
 		{"http://LOCALHOST.:3128", "upstream", nil},
 		{"http://127.0.0.1:3128", "upstream", nil},
+		{"http://127.0.0.1.:3128", "upstream", nil},
+		{"http://0.0.0.0.:3128", "upstream", nil},
 		{"http://tok3n:s3cret@host:badport", "", nil},
 	}
 	for _, c := range bad {

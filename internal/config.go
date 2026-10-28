@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -199,11 +198,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if up, _ := egress.ParseUpstream(c.ZipReport.UpstreamProxy.URL, c.ZipReport.UpstreamProxy.Resolve, c.ZipReport.UpstreamProxy.NoProxy); up != nil {
-		onHost := egress.LoopbackName(up.Hostname())
-		if ip, err := netip.ParseAddr(up.Hostname()); err == nil && egress.OnThisHost(ip, nil) {
-			onHost = true
-		}
-		if onHost {
+		if egress.NamesThisHost(up.Hostname()) {
 			port, _ := strconv.Atoi(up.URL.Port())
 			what := ""
 			switch {

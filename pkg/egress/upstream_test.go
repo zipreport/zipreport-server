@@ -39,6 +39,16 @@ func TestOnThisHost(t *testing.T) {
 	}
 }
 
+func TestNamesThisHost(t *testing.T) {
+	for _, h := range []string{"localhost", "LOCALHOST.", "x.localhost", "127.0.0.1", "127.0.0.1.", "0.0.0.0.", "::1",
+		"::ffff:127.0.0.1", "64:ff9b::7f00:1"} {
+		assert.True(t, NamesThisHost(h), h)
+	}
+	for _, h := range []string{"", "proxy.test", "proxy.test.", "203.0.113.2", "203.0.113.2.", "127.0.0.1.example.com"} {
+		assert.False(t, NamesThisHost(h), h)
+	}
+}
+
 func TestNorm(t *testing.T) {
 	cases := map[string]string{
 		"::ffff:8.8.8.8":     "8.8.8.8",

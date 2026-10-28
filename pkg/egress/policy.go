@@ -223,13 +223,8 @@ func ParseUpstream(rawURL, resolve string, noProxy []string) (*Upstream, error) 
 	if resolve != "" && resolve != "local" && resolve != "upstream" {
 		return nil, fmt.Errorf("resolve %q must be \"local\" or \"upstream\"", resolve)
 	}
-	if resolve == "upstream" {
-		if LoopbackName(u.Hostname()) {
-			return nil, errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
-		}
-		if ip, err := netip.ParseAddr(u.Hostname()); err == nil && OnThisHost(ip, nil) {
-			return nil, errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
-		}
+	if resolve == "upstream" && NamesThisHost(u.Hostname()) {
+		return nil, errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
 	}
 	var rules []Rule
 	for i, s := range noProxy {
@@ -266,6 +261,16 @@ var loopbackNames = map[string]bool{
 func LoopbackName(host string) bool {
 	h := strings.TrimSuffix(strings.ToLower(host), ".")
 	return loopbackNames[h] || strings.HasSuffix(h, ".localhost")
+}
+
+// NamesThisHost reports whether host, as configured, names this machine without a lookup: a LoopbackName, or an IP
+// literal that is loopback or unspecified. One trailing dot is ignored, for literals too ("127.0.0.1.").
+func NamesThisHost(host string) bool {
+	if LoopbackName(host) {
+		return true
+	}
+	ip, err := netip.ParseAddr(strings.TrimSuffix(host, "."))
+	return err == nil && OnThisHost(ip, nil)
 }
 
 // InterfaceIPs converts net.InterfaceAddrs results to addresses (IPv4-mapped unmapped); entries of other types are

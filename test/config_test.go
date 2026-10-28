@@ -360,6 +360,8 @@ func TestConfig_UpstreamProxyValidation(t *testing.T) {
 		{"[::1]", cfg.ApiServer.Port, false, true},
 		{"0.0.0.0", cfg.ApiServer.Port, false, true},
 		{"127.0.0.2", cfg.ApiServer.Port, false, true},
+		{"127.0.0.1.", cfg.ApiServer.Port, false, true},
+		{"LOCALHOST.", first, false, true},
 		{"127.0.0.1", cfg.Prometheus.Port, false, false},
 		{"127.0.0.1", cfg.Prometheus.Port, true, true},
 	} {
