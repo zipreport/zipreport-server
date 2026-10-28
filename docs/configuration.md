@@ -117,8 +117,10 @@ reach the internet through an HTTP(S) proxy. `HTTP_PROXY`, `HTTPS_PROXY` and `NO
 - Only **public** destinations. Anything reachable only because of `egressAllow` (loopback, private, local-interface
   addresses) is always dialled directly, and so are `noProxy` entries.
 - The upstream proxy itself is never reachable from a rendered page. With `resolve: "local"` this covers every address
-  its name currently resolves to and the 64 it most recently resolved to, on all ports. With `"upstream"` only its
-  configured name and those addresses are refused, so an alias the upstream resolves to itself is not.
+  its name currently resolves to and the 64 it most recently resolved to, on all ports; while its name resolves, an
+  address it moves to during a job is refused within about 30 s. Connections a page already holds are not
+  re-checked, and upstream instances that never appear in DNS for its name are not known. With `"upstream"` only
+  its configured name and those addresses are refused, so an alias the upstream resolves to itself is not.
 - Because every port of the upstream's addresses is refused, an upstream on `127.0.0.1` (e.g. a cntlm/px sidecar)
   makes `egressAllow` destinations on `127.0.0.1` unreachable. If you need loopback `egressAllow` destinations, make
   the upstream listen on a dedicated loopback address such as `127.0.0.2`.
@@ -186,10 +188,11 @@ http_access deny private_dst
 
 **Operations**
 
-- The upstream's name is resolved when a job starts (answers are reused for 30 s). While it cannot be resolved, every
-  render fails. A name written with a trailing dot (`proxy.corp.`) is looked up exactly as written, without the
-  resolver's search domains; it must then resolve in DNS as written (an `/etc/hosts` entry matches a rooted name
-  only in the Docker image's pure-Go resolver, not through glibc).
+- The upstream's name is resolved when a job starts and re-checked at most every 30 s while it runs (answers are
+  reused for 30 s). While it cannot be resolved, every render fails. A name written with a trailing dot
+  (`proxy.corp.`) is looked up exactly as written, without the resolver's search domains; it must then resolve in
+  DNS as written (an `/etc/hosts` entry matches a rooted name only in the Docker image's pure-Go resolver, not
+  through glibc).
 - Upstream failures are counted and logged per job (relayed by-name responses are not). An upstream error page can be
   relayed to the page and so appear in the PDF.
 - If the upstream is on this host (a loopback name or address, or `0.0.0.0`), its port must not be `apiServer.port`,

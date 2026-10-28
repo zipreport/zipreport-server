@@ -76,6 +76,7 @@ type Proxy struct {
 	upstreamAddrs     []netip.Addr // set at Start: the upstream's current and recently seen addresses, normalised (for comparisons)
 	upstreamDial      []netip.Addr // set at Start: its current answer as resolved (for dialling: norm turns ::1 into 0.0.0.1)
 	upstreamPort      int
+	upstreamCheckedAt atomic.Int64    // time.Since(monoEpoch) at this job's last refresh of the upstream's addresses; 0: none
 	base              context.Context // cancelled to abort in-flight forwards
 	cancel            context.CancelFunc
 	proxyPort         int
@@ -353,6 +354,8 @@ func (p *Proxy) hardDenyPort(port int) bool {
 
 var errRefused = errors.New("destination refused")
 
+var monoEpoch = time.Now() // base for monotonic durations stored in atomics
+
 // resolve returns the addresses of host: the literal address itself, or the lookup answer.
 func (p *Proxy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil {
@@ -427,6 +430,43 @@ func (p *Proxy) isUpstreamAddr(a netip.Addr) bool {
 	return false
 }
 
+// upstreamRefused reports whether any of addrs belongs to the upstream proxy: an address vetted at Start, or one its
+// name resolved to since, in any job. Once the shared answer is stale, a job re-resolves the name itself, at most
+// once per upstreamCacheTTL, so an address the upstream's DNS rotates to during a long job is refused too; a failed
+// lookup keeps the rest.
+func (p *Proxy) upstreamRefused(ctx context.Context, addrs []netip.Addr) bool {
+	for _, a := range addrs {
+		if p.isUpstreamAddr(a) {
+			return true
+		}
+	}
+	up := p.policy.Upstream
+	now := time.Now()
+	refuse, stale := up.refusalsCached(now)
+	if stale {
+		at := int64(time.Since(monoEpoch)) // monotonic: a wall-clock step must not stop or force refreshes
+		if last := p.upstreamCheckedAt.Load(); (last == 0 || at-last >= int64(upstreamCacheTTL)) &&
+			p.upstreamCheckedAt.CompareAndSwap(last, at) {
+			lctx := p.base // not ctx: a page that cancels its request must not cancel the refresh; Close still does
+			if lctx == nil {
+				lctx = context.WithoutCancel(ctx) // a Proxy that never ran Start (unit tests)
+			}
+			if _, fresh, err := up.addrs(now, func() ([]netip.Addr, error) { return p.resolve(lctx, up.LookupName()) }); err == nil {
+				refuse = append(refuse, fresh...)
+			}
+		}
+	}
+	for _, r := range refuse {
+		r = norm(r)
+		for _, a := range addrs {
+			if norm(a) == r {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (p *Proxy) isUpstreamName(host string) bool {
 	return strings.TrimSuffix(strings.ToLower(host), ".") == p.policy.Upstream.Hostname()
 }
@@ -465,7 +505,7 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 		if err != nil {
 			return route{}, errRefused
 		}
-		return p.vettedRoute(host, port, portNum, addrs, route{upstream: true})
+		return p.vettedRoute(ctx, host, port, portNum, addrs, route{upstream: true})
 	}
 
 	// by-name route
@@ -483,20 +523,18 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 		}
 		return route{targets: name, upstream: true, byName: true}, nil
 	}
-	return p.vettedRoute(host, port, portNum, addrs, route{targets: name, upstream: true, byName: true})
+	return p.vettedRoute(ctx, host, port, portNum, addrs, route{targets: name, upstream: true, byName: true})
 }
 
 // vettedRoute finishes a route whose addresses are known: check them, refuse the upstream's own addresses, keep
 // anything admitted only by egressAllow (non-public or local) and noProxy destinations direct, and otherwise hand it
 // to the upstream as via (its targets default to the vetted addresses).
-func (p *Proxy) vettedRoute(host, port string, portNum int, addrs []netip.Addr, via route) (route, error) {
+func (p *Proxy) vettedRoute(ctx context.Context, host, port string, portNum int, addrs []netip.Addr, via route) (route, error) {
 	if err := p.check(host, port, portNum, addrs); err != nil {
 		return route{}, err
 	}
-	for _, a := range addrs {
-		if p.isUpstreamAddr(a) {
-			return route{}, errRefused
-		}
+	if p.upstreamRefused(ctx, addrs) {
+		return route{}, errRefused
 	}
 	vetted := targetsOf(addrs, port)
 	for _, a := range addrs {

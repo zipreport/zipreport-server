@@ -193,6 +193,14 @@ func (u *Upstream) refusals(current []netip.Addr) []netip.Addr {
 	return refuse
 }
 
+// refusalsCached is the refusal list without a lookup: the addresses the upstream's name resolved to recently, in
+// any job, plus the cached answer; stale reports whether that answer is older than upstreamCacheTTL.
+func (u *Upstream) refusalsCached(now time.Time) (refuse []netip.Addr, stale bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.refusals(u.cached), u.cached == nil || now.Sub(u.cachedAt) >= upstreamCacheTTL
+}
+
 // ParseUpstream validates the zipReport.upstreamProxy settings. An empty rawURL disables chaining and returns nil.
 // Errors never include rawURL or any part of it: it may carry a password.
 func ParseUpstream(rawURL, resolve string, noProxy []string) (*Upstream, error) {
