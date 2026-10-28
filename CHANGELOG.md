@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The egress proxy's local-address checks also catch the NAT64, 6to4 and IPv4-compatible forms of this host's own addresses (on a reserved port these could reach the API or metrics port through a hairpinning NAT64 gateway)
 - An upstream proxy name written with a trailing dot is looked up as written, so resolver search domains (e.g. Kubernetes `ndots`) cannot redirect it
 - A running job also refuses an upstream proxy address its name started resolving to after the job began
+- Config validation refuses `resolve: "upstream"` with an upstream written as an on-host IP with a trailing dot (`http://127.0.0.1.:3128`), as it already did without the dot
 
 ## [3.0.0]
 
