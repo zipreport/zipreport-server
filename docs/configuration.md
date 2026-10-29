@@ -98,6 +98,7 @@ Configuration for the ZipReport rendering engine.
 | `upstreamProxy.url`    | string  | `""`    | `http://[user:pass@]host:port` or `https://...` of a proxy to chain public traffic through. Empty disables chaining. See [Upstream proxy](#upstream-proxy). |
 | `upstreamProxy.resolve`| string  | `"local"` | `"local"`: send the upstream the vetted IP. `"upstream"`: send it the host name, which **moves the security boundary to the upstream**. See [Upstream proxy](#upstream-proxy). |
 | `upstreamProxy.noProxy`| array of strings | `[]` | Public CIDRs or exact `host:port` entries dialled directly instead of through the upstream (still vetted). A CIDR whose network address is not public is rejected at startup (exact host:port entries are not checked); private destinations are always dialled directly anyway. |
+| `upstreamProxy.authProbe`| string | `""` | `host:port` your proxy requires authentication for and lets this account reach (port 443 or another port your proxy allows before its auth rule; an origin it reaches quickly). With credentials in `url`, a `407` for another destination is checked against it, so a page cannot block upstream use by requesting destinations your proxy refuses with `407`. Sent to the proxy as written; must not be on this host or be the proxy itself. See [Upstream proxy](#upstream-proxy). |
 
 #### Upstream proxy
 
@@ -182,13 +183,28 @@ http_access deny private_dst
   user name). With an `http://` upstream the credentials cross the network in clear text.
 - A `407` in reply to a tunnel request blocks that destination (the requested `host:port`, whatever address it
   resolves to) for 5 minutes.
-- With credentials configured, `407`s for three different destinations within 5 minutes block all upstream use for
-  5 minutes. A single `407` can be the proxy's policy for one destination, so it never cuts other destinations off.
-  Without credentials there is no password to lock out, and a `407` only blocks its own destination.
+- With `upstreamProxy.authProbe` set (and credentials configured), the server then checks `CONNECT <authProbe>` without
+  and with credentials, at most once every 2 seconds, and sooner after three `407`s since it last passed. Tunnel and
+  plain-http requests through the upstream wait for the answer. A `407` with credentials, after they have worked
+  there, blocks all upstream use for 5 minutes. Any other answer with credentials means the first `407` was the proxy's
+  policy for that destination, and nothing else is blocked.
+- If `authProbe` answers without credentials, or the credentials never worked there, three `407`s for different
+  destinations within 5 minutes block all upstream use, as without `authProbe` (`authProbe misconfigured` may appear
+  as the job's last upstream error). If it cannot be reached after it has worked, `407`s only block their own
+  destination until it answers again (`authProbe unavailable`). Once the credentials have worked at `authProbe`, a
+  later `407` there always blocks all upstream use: if you change the proxy rules for `authProbe`, restart the server.
+- Without `authProbe`: `407`s for three different destinations within 5 minutes block all upstream use for
+  5 minutes. If your proxy answers `407` (not `403`) for destinations it denies, a page can trigger this; set
+  `authProbe` or make the proxy deny with `403`. Without credentials there is no password to lock out, and a `407` only
+  blocks its own destination.
 - This throttles a wrong password; it does not prevent a lockout. Tunnel requests already on their way when the first
-  `407` arrives (Chrome loads in parallel, and all jobs share the upstream) each send the password, and after every
-  cool-down three more attempts are made, so a directory lockout threshold can still be reached. Fix or rotate the
-  password promptly.
+  `407` arrives (Chrome loads in parallel, and all jobs share the upstream) each send the password. Without
+  `authProbe`, three more attempts are made after every cool-down. With it, after a password change, the requests in
+  flight plus up to three more and the probe are made, or, while `authProbe` is unreachable after it has worked, one
+  attempt per new destination. Fix or rotate the password promptly.
+- Each probe opens and closes a tunnel to `authProbe` through your proxy, and requests through it wait while a probe
+  runs. `authProbe` needs credentials in `url`, and works only if your proxy checks credentials before its other rules
+  and answers wrong credentials at `authProbe` with `407` (not `403` or a `5xx`).
 - With `resolve: "upstream"`, plain-`http://` requests are relayed to the upstream and a `407` on them is passed to
   the page unchanged (it may come from the origin). They never trip the latch, and each sends the password until a
   tunnel request (`https://`) trips it.
