@@ -1409,10 +1409,10 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	assert.Len(t, fu.requests(), 2)
 	assert.Equal(t, 502, connectCode(t, env2, "c.test:443"))
 	assert.Len(t, fu.requests(), 3)
-	conns = fu.conns.Load()
+	connsD := fu.conns.Load() // its own variable: the earlier Never closure still reads conns
 	assert.Equal(t, 502, connectCode(t, env1, "d.test:443"))
 	assert.Len(t, fu.requests(), 3, "latched: no further logins")
-	assert.Never(t, func() bool { return fu.conns.Load() != conns }, 200*time.Millisecond, 10*time.Millisecond,
+	assert.Never(t, func() bool { return fu.conns.Load() != connsD }, 200*time.Millisecond, 10*time.Millisecond,
 		"a blocked destination opens no connection to the upstream")
 }
 
