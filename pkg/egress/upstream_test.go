@@ -305,6 +305,7 @@ func TestAuthLatch(t *testing.T) {
 		assert.True(t, up.authBlocked("a.test:443", t0))
 		assert.False(t, up.authBlocked("b.test:443", t0), "one destination's 407 may be the upstream's policy")
 	})
+	// without authProbe
 	t.Run("distinct targets trip the latch", func(t *testing.T) {
 		up := mk(t, "http://u:p@proxy.test:3128")
 		for _, tg := range []string{"a.test:443", "b.test:443"} {

@@ -1355,6 +1355,7 @@ func TestEgressUpstream_AuthFailureNotRetried(t *testing.T) {
 	assert.NotContains(t, last, "s3cret")
 }
 
+// covers the rule without authProbe
 func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	be := newBackend(t)
 	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
@@ -1369,8 +1370,11 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 
 	assert.Equal(t, 502, connectCode(t, env1, "pub.test:443"))
 	require.Len(t, fu.requests(), 1)
+	conns := fu.conns.Load()
 	assert.Equal(t, 502, connectCode(t, env2, "pub.test:443"))
 	assert.Len(t, fu.requests(), 1, "the refused target is blocked for every job")
+	assert.Never(t, func() bool { return fu.conns.Load() != conns }, 200*time.Millisecond, 10*time.Millisecond,
+		"a blocked destination opens no connection to the upstream")
 	n, last := env2.proxy.UpstreamErrors()
 	assert.Equal(t, 1, n)
 	assert.Contains(t, last, "latched")
@@ -1381,8 +1385,11 @@ func TestEgressUpstream_AuthFailureLatched(t *testing.T) {
 	assert.Len(t, fu.requests(), 2)
 	assert.Equal(t, 502, connectCode(t, env2, "c.test:443"))
 	assert.Len(t, fu.requests(), 3)
+	conns = fu.conns.Load()
 	assert.Equal(t, 502, connectCode(t, env1, "d.test:443"))
 	assert.Len(t, fu.requests(), 3, "latched: no further logins")
+	assert.Never(t, func() bool { return fu.conns.Load() != conns }, 200*time.Millisecond, 10*time.Millisecond,
+		"a blocked destination opens no connection to the upstream")
 }
 
 func TestEgressUpstream_AuthWithoutCredentialsNeverBlocksAll(t *testing.T) {
@@ -1602,22 +1609,29 @@ func TestEgressUpstream_CancelledDialNotCounted(t *testing.T) {
 func TestEgressUpstream_OriginAuthResponseDoesNotLatch(t *testing.T) {
 	be := newBackend(t)
 	fu := newFakeUpstream(t, be, fakeUpstreamOpts{originAuth: true})
-	up := mkUpstream(t, fu.proxyURL("http", "", "example.com"), "upstream")
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "example.com"), "upstream")
+	lookup := map[string][]string{
+		"example.com": {"203.0.113.10"},
+		"a.test":      {"8.8.8.8"}, "b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"},
+	}
 	start := func() *proxyEnv {
-		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: byNameLookup, dial: routingDial(fu, &dialLog{})})
+		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
 	}
 	env1, env2 := start(), start()
 
-	resp, err := env1.client.Get("http://pub.test/x")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	assert.Equal(t, 407, resp.StatusCode, "a forwarded 407 is relayed unchanged")
+	// three distinct destinations whose origin answers 407: a wrong password would look exactly like this if it latched
+	for _, u := range []string{"http://a.test/x", "http://b.test/x", "http://c.test/x"} {
+		resp, err := env1.client.Get(u)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, 407, resp.StatusCode, "a forwarded 407 is relayed unchanged")
+	}
 	n, last := env1.proxy.UpstreamErrors()
 	assert.Equal(t, 0, n)
 	assert.NotContains(t, last, "Proxy Authentication Required")
 
 	before := len(fu.requests())
-	assert.Equal(t, 200, connectCode(t, env2, "pub.test:443"), "another job must still reach the upstream")
+	assert.Equal(t, 200, connectCode(t, env2, "d.test:443"), "another job must still reach the upstream")
 	assert.Equal(t, before+1, len(fu.requests()))
 	_, last = env2.proxy.UpstreamErrors()
 	assert.NotContains(t, last, "Proxy Authentication Required")
