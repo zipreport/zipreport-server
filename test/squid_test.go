@@ -202,6 +202,33 @@ func TestSquid_WrongPassword(t *testing.T) {
 	assert.NotContains(t, last, "wrong")
 }
 
+func TestSquid_AuthProbe(t *testing.T) {
+	requireSquid(t)
+	extra := map[string][]string{"p1.test": {"203.0.113.97"}, "p2.test": {"203.0.113.98"}, "p3.test": {"203.0.113.99"}}
+	for _, tc := range []struct {
+		name, userinfo, probe string
+		wantOriginCode        int
+	}{
+		{"policy_407s_with_probe_do_not_latch", squidUser + ":" + squidPass, originHost + ":443", http.StatusOK},
+		{"policy_407s_without_probe_latch", squidUser + ":" + squidPass, "", http.StatusBadGateway},
+		{"wrong_password_with_probe_latches", squidUser + ":wrong", originHost + ":443", http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := mkUpstream(t, squidURL(tc.userinfo), "local")
+			up.AuthProbe = tc.probe
+			lookup := map[string][]string{squidHost: {squidIP}, localOnly: {originIP}, originHost: {originIP}}
+			for k, v := range extra {
+				lookup[k] = v
+			}
+			env := startProxy(t, proxyOpts{upstream: up, lookup: lookup})
+			for _, d := range []string{"p1.test:443", "p2.test:443", "p3.test:443"} {
+				assert.Equal(t, http.StatusBadGateway, connectCode(t, env, d))
+			}
+			assert.Equal(t, tc.wantOriginCode, connectCode(t, env, originHost+":443"))
+		})
+	}
+}
+
 func TestSquid_NoCredentials(t *testing.T) {
 	requireSquid(t)
 	env := startSquidProxy(t, "", "local", true, nil)
