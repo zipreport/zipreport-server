@@ -437,7 +437,7 @@ func PlainHostName(host string) bool {
 	if len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') {
 		for i := 2; i < len(last); i++ {
 			c := last[i]
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 				return true
 			}
 		}
