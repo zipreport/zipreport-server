@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -335,6 +339,58 @@ func TestAuthLatch(t *testing.T) {
 		}
 		assert.False(t, up.authBlocked("z.test:443", t0))
 		assert.True(t, up.authBlocked("a.test:443", t0))
+	})
+	t.Run("with an auth probe a 407 asks for it instead of counting", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		up.AuthProbe = "probe.test:443"
+		for _, tg := range []string{"a.test:443", "b.test:443", "c.test:443"} {
+			assert.True(t, up.record407(tg, t0))
+		}
+		assert.False(t, up.authBlocked("z.test:443", t0), "only the probe may latch")
+		assert.True(t, up.authBlocked("a.test:443", t0))
+	})
+	t.Run("without an auth probe the distinct-destination rule is unchanged", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		for _, tg := range []string{"a.test:443", "b.test:443"} {
+			assert.False(t, up.record407(tg, t0))
+		}
+		assert.False(t, up.authBlocked("z.test:443", t0))
+		assert.False(t, up.record407("c.test:443", t0))
+		assert.True(t, up.authBlocked("z.test:443", t0))
+	})
+	t.Run("without credentials no probe is asked for", func(t *testing.T) {
+		up := mk(t, "http://proxy.test:3128")
+		up.AuthProbe = "probe.test:443"
+		assert.False(t, up.record407("a.test:443", t0))
+	})
+	t.Run("latchIfSpread counts only 407s after the last pass", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		up.AuthProbe = "probe.test:443"
+		up.record407("a.test:443", t0)
+		up.record407("b.test:443", t0)
+		up.probeOKAt.Store(t0.Add(time.Second).UnixNano())
+		t1 := t0.Add(2 * time.Second)
+		up.record407("c.test:443", t1)
+		up.latchIfSpread(t1)
+		assert.False(t, up.authBlocked("z.test:443", t1))
+		t2 := t0.Add(3 * time.Second)
+		up.record407("d.test:443", t2)
+		up.record407("e.test:443", t2)
+		up.latchIfSpread(t2)
+		assert.True(t, up.authBlocked("z.test:443", t2))
+	})
+	t.Run("failsSincePass ignores 407s older than the cooldown", func(t *testing.T) {
+		up := mk(t, "http://u:p@proxy.test:3128")
+		up.AuthProbe = "probe.test:443"
+		t3 := t0.Add(defaultAuthCooldown + time.Second)
+		up.record407("a.test:443", t0)
+		up.record407("b.test:443", t3) // prunes a
+		up.record407("c.test:443", t3)
+		assert.Equal(t, 2, up.failsSincePass(t3))
+		up.mu.Lock()
+		up.authFails["old.test:443"] = t0
+		up.mu.Unlock()
+		assert.Equal(t, 2, up.failsSincePass(t3))
 	})
 	t.Run("zero AuthCooldown means the default", func(t *testing.T) {
 		u, err := ParseUpstream("http://u:p@proxy.test:3128", "", nil)
@@ -920,4 +976,207 @@ func TestForwardTunnelResponseWaitBounded(t *testing.T) {
 	n, last := p.UpstreamErrors()
 	assert.Equal(t, 1, n)
 	assert.Equal(t, "no response", last)
+}
+
+// probeUpstream starts an upstream listener for the probe unit tests and points a Proxy at it. handle runs per
+// accepted connection, with the 0-based accept index.
+func probeUpstream(t *testing.T, authProbe string, handle func(n int, c net.Conn, up *Upstream)) (*Upstream, *Proxy) {
+	t.Helper()
+	up, err := ParseUpstream("http://user:pw@proxy.test:3128", "local", nil)
+	require.NoError(t, err)
+	up.AuthProbe = authProbe
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for n := 0; ; n++ {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				handle(n, c, up)
+			}()
+		}
+	}()
+	p := unitProxy(t, Policy{Upstream: up}, nil)
+	p.upstreamDial = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	p.upstreamPort = l.Addr().(*net.TCPAddr).Port
+	p.Dial = (&net.Dialer{}).DialContext
+	return up, p
+}
+
+func TestProbeAuthStopsWhenLatched(t *testing.T) {
+	var got atomic.Int64
+	up, p := probeUpstream(t, "probe.test:443", func(_ int, c net.Conn, _ *Upstream) {
+		_ = c.SetReadDeadline(time.Now().Add(time.Second))
+		b, _ := io.ReadAll(c)
+		got.Add(int64(len(b)))
+	})
+	up.ProbeTimeout = 200 * time.Millisecond
+	up.latchAuth(time.Now())
+	p.probeAuth(context.Background())
+	time.Sleep(100 * time.Millisecond)
+	assert.Zero(t, got.Load(), "nothing, and so no credentials, was sent to the upstream")
+}
+
+// probeRecord is what the probe tests' fake upstream saw; its handlers answer CONNECTs without credentials with 407
+// and, with credentials, hold the first probe.test:443 request until the client gives up and answer 403 otherwise.
+type probeRecord struct {
+	mu      sync.Mutex
+	targets []string
+	auths   []bool
+	running []bool
+}
+
+func TestProbeWaitBlocksCredentials(t *testing.T) {
+	rec := &probeRecord{}
+	held := make(chan struct{})
+	var heldOnce atomic.Bool
+	up, p := probeUpstream(t, "probe.test:443", func(n int, c net.Conn, up *Upstream) {
+		if n >= 2 { // after the probe's two connections
+			up.probeMu.Lock()
+			running := up.probeDone != nil
+			up.probeMu.Unlock()
+			rec.mu.Lock()
+			rec.running = append(rec.running, running)
+			rec.mu.Unlock()
+		}
+		req, err := http.ReadRequest(bufio.NewReader(c))
+		if err != nil {
+			return
+		}
+		auth := req.Header.Get("Proxy-Authorization") != ""
+		rec.mu.Lock()
+		rec.targets = append(rec.targets, req.Host)
+		rec.auths = append(rec.auths, auth)
+		rec.mu.Unlock()
+		switch {
+		case !auth:
+			_, _ = c.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
+		case req.Host == "probe.test:443" && heldOnce.CompareAndSwap(false, true):
+			close(held)
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _ = io.Copy(io.Discard, c)
+		default:
+			_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
+		}
+	})
+	up.ProbeTimeout = 300 * time.Millisecond
+
+	probed := make(chan struct{})
+	go func() { p.probeAuth(context.Background()); close(probed) }()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never reached the upstream with credentials")
+	}
+	start := time.Now()
+	p.probeAuth(context.Background()) // single flight: returns at once
+	assert.Less(t, time.Since(start), 50*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := p.dialUpstream(ctx, "x.test:443", "8.8.8.8:443") // waits for the probe
+	require.Error(t, err)
+	<-probed
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.NotEmpty(t, rec.running)
+	for _, r := range rec.running {
+		assert.False(t, r, "a connection reached the upstream while the probe was running")
+	}
+	probeNo, probeYes := 0, 0
+	for i, tg := range rec.targets {
+		if tg == "probe.test:443" {
+			if rec.auths[i] {
+				probeYes++
+			} else {
+				probeNo++
+			}
+		}
+	}
+	assert.Equal(t, 1, probeNo)
+	assert.Equal(t, 1, probeYes)
+}
+
+func TestProbeWaitBeforeWrite(t *testing.T) {
+	rec := &probeRecord{}
+	held := make(chan struct{})
+	var heldOnce atomic.Bool
+	up, p := probeUpstream(t, "probe.test:443", func(_ int, c net.Conn, up *Upstream) {
+		req, err := http.ReadRequest(bufio.NewReader(c))
+		if err != nil {
+			return
+		}
+		if req.Host == "8.8.8.8:443" {
+			up.probeMu.Lock()
+			running := up.probeDone != nil
+			up.probeMu.Unlock()
+			rec.mu.Lock()
+			rec.running = append(rec.running, running)
+			rec.mu.Unlock()
+		}
+		auth := req.Header.Get("Proxy-Authorization") != ""
+		switch {
+		case !auth:
+			_, _ = c.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
+		case req.Host == "probe.test:443" && heldOnce.CompareAndSwap(false, true):
+			close(held)
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _ = io.Copy(io.Discard, c)
+		default:
+			_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
+		}
+	})
+	up.ProbeTimeout = 300 * time.Millisecond
+	dialling, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	base := p.Dial
+	p.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if first.CompareAndSwap(false, true) {
+			close(dialling)
+			<-release
+		}
+		return base(ctx, network, addr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dialed := make(chan error, 1)
+	go func() { _, err := p.dialUpstream(ctx, "x.test:443", "8.8.8.8:443"); dialed <- err }()
+	<-dialling
+	probed := make(chan struct{})
+	go func() { p.probeAuth(context.Background()); close(probed) }()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never reached the upstream with credentials")
+	}
+	close(release)
+	require.Error(t, <-dialed)
+	<-probed
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Len(t, rec.running, 1, "the request reached the upstream once")
+	assert.False(t, rec.running[0], "credentials were written while the probe was running")
+}
+
+func TestParseAuthProbe(t *testing.T) {
+	for _, s := range []string{"h:1", "h:65535", "1.2.3.4:443", "[2001:db8::1]:443"} {
+		assert.NoError(t, ParseAuthProbe(s), s)
+	}
+	for _, s := range []string{
+		"zq9", ":443", "zq9:0", "zq9:+1", "zq9:01", "zq9:65536", "zq9:x", "zq 9:1", "localhost:1", "127.0.0.1:1",
+		"[::1]:1", "0.0.0.0:1", "[zq9]:1", "[1.2.3.4]:443", "localhost.:1", "127.1:1", "0x7f000001:1", "127.0.0.1.:1",
+	} {
+		err := ParseAuthProbe(s)
+		require.Error(t, err, s)
+		if strings.HasPrefix(s, "zq") {
+			assert.NotContains(t, err.Error(), s)
+		}
+	}
 }
