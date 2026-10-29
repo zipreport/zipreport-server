@@ -860,6 +860,10 @@ func (p *Proxy) probeAuth(ctx context.Context) {
 		// trip the latch
 		up.probeVerdict.Store(verdictRetry)
 	}
+	if p.probeIsUpstream() {
+		misconfigured() // a CONNECT to the upstream's own address says nothing about the credentials
+		return
+	}
 	switch code := ask(false); {
 	case code == http.StatusOK:
 		misconfigured()
@@ -883,6 +887,17 @@ func (p *Proxy) probeAuth(ctx context.Context) {
 		up.probeOKAt.Store(time.Now().UnixNano())
 		up.probeVerdict.Store(verdictPass)
 	}
+}
+
+// probeIsUpstream reports whether AuthProbe is an IP literal of the upstream proxy at its port. Validation catches
+// the proxy's own name; another name for it is not detected, since the upstream resolves AuthProbe itself.
+func (p *Proxy) probeIsUpstream() bool {
+	host, port, err := net.SplitHostPort(p.policy.Upstream.AuthProbe)
+	if err != nil || port != strconv.Itoa(p.upstreamPort) {
+		return false
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && p.isUpstreamAddr(a)
 }
 
 // dialViaUpstream tries each target through its own upstream tunnel, in order, like dialTargets, but stops at once

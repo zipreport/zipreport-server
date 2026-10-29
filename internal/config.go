@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -128,7 +129,12 @@ func (c *ZipReportConfig) Validate() error {
 			return errors.New("zipReport.upstreamProxy: authProbe needs credentials in url or ZIPREPORT_UPSTREAM_PROXY")
 		}
 		host, port, _ := net.SplitHostPort(p)
-		if strings.EqualFold(strings.TrimSuffix(host, "."), up.Hostname()) && port == up.URL.Port() {
+		pa, perr := netip.ParseAddr(host)
+		ua, uerr := netip.ParseAddr(up.Hostname())
+		sameHost := strings.EqualFold(strings.TrimSuffix(host, "."), up.Hostname()) ||
+			perr == nil && uerr == nil && pa.Unmap() == ua.Unmap()
+		upPort, _ := strconv.Atoi(up.URL.Port())
+		if sameHost && port == strconv.Itoa(upPort) {
 			return errors.New("zipReport.upstreamProxy: authProbe must not be the upstream proxy itself")
 		}
 	}

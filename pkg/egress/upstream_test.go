@@ -1021,6 +1021,22 @@ func TestProbeAuthStopsWhenLatched(t *testing.T) {
 	assert.Zero(t, got.Load(), "nothing, and so no credentials, was sent to the upstream")
 }
 
+func TestProbeAuthRefusesUpstreamAddress(t *testing.T) {
+	for _, host := range []string{"203.0.113.10", "::ffff:203.0.113.10"} {
+		t.Run(host, func(t *testing.T) {
+			var conns atomic.Int64
+			up, p := probeUpstream(t, "", func(_ int, c net.Conn, _ *Upstream) { conns.Add(1) })
+			p.upstreamAddrs = []netip.Addr{netip.MustParseAddr("203.0.113.10")}
+			up.AuthProbe = net.JoinHostPort(host, fmt.Sprint(p.upstreamPort))
+			p.probeAuth(context.Background())
+			time.Sleep(100 * time.Millisecond)
+			assert.Zero(t, conns.Load(), "the probe reached the upstream")
+			_, last := p.UpstreamErrors()
+			assert.Equal(t, "authProbe misconfigured", last)
+		})
+	}
+}
+
 // probeRecord is what the probe tests' fake upstream saw; its handlers answer CONNECTs without credentials with 407
 // and, with credentials, hold the first probe.test:443 request until the client gives up and answer 403 otherwise.
 type probeRecord struct {
