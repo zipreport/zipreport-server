@@ -420,3 +420,17 @@ func TestConfigureEngine_UpstreamPolicy(t *testing.T) {
 	assert.True(t, up.ByName)
 	assert.Equal(t, "p.test:3128", up.URL.Host)
 }
+
+func TestConfig_NullApiServerWithEnvKey(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(f, []byte(`{"apiServer": null}`), 0o600))
+	p, err := provider.NewJsonProvider(f)
+	require.NoError(t, err)
+	cfg := internal.NewConfig()
+	require.NoError(t, p.Get(cfg))
+	require.Nil(t, cfg.ApiServer, "fixture must produce a nil apiServer")
+
+	t.Setenv("ZIPREPORT_API_KEY", strongSecret)
+	require.NotPanics(t, cfg.ApplyEnvOverrides)
+	assert.EqualError(t, cfg.Validate(), "apiServer is required")
+}

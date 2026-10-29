@@ -231,7 +231,7 @@ func (c *Config) Validate() error {
 //
 // HTTP_PROXY, HTTPS_PROXY and NO_PROXY are deliberately ignored.
 func (c *Config) ApplyEnvOverrides() {
-	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
+	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" && c.ApiServer != nil {
 		c.ApiServer.AuthTokenSecret = apiKey
 	}
 	if up := os.Getenv("ZIPREPORT_UPSTREAM_PROXY"); up != "" && c.ZipReport != nil {
