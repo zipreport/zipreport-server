@@ -509,6 +509,9 @@ func (p *Proxy) plan(ctx context.Context, host, port string) (route, error) {
 	}
 
 	// by-name route
+	if !PlainHostName(host) {
+		return route{}, errRefused // the upstream could read it as an address, or as another name
+	}
 	if LoopbackName(host) {
 		return route{}, errRefused
 	}
