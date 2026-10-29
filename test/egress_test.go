@@ -869,6 +869,11 @@ type fakeUpstream struct {
 	originAuth bool            // 407 to absolute-form requests only, as if relayed from the origin
 	banner     string          // written in the same write as the CONNECT 200
 	backend    string          // host:port every CONNECT is spliced to
+
+	authTargets map[string]bool // CONNECT target -> 407 with or without credentials (the upstream's policy)
+	requireAuth map[string]bool // CONNECT target -> 407 without credentials
+	silent      map[string]bool // CONNECT target with credentials -> no answer
+	rotated     atomic.Bool     // behave as authAll (the password changed)
 }
 
 type fakeUpstreamOpts struct {
@@ -877,6 +882,10 @@ type fakeUpstreamOpts struct {
 	originAuth bool
 	banner     string
 	tls        *tls.Config
+
+	authTargets map[string]bool
+	requireAuth map[string]bool
+	silent      map[string]bool
 }
 
 func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream {
@@ -885,6 +894,7 @@ func newFakeUpstream(t *testing.T, b *backend, o fakeUpstreamOpts) *fakeUpstream
 	require.NoError(t, err)
 	f := &fakeUpstream{
 		port: l.Addr().(*net.TCPAddr).Port, refuse: o.refuse, authAll: o.authAll, originAuth: o.originAuth, banner: o.banner,
+		authTargets: o.authTargets, requireAuth: o.requireAuth, silent: o.silent,
 		backend: b.srv.Listener.Addr().String(),
 	}
 	f.ln = l
@@ -940,8 +950,22 @@ func (f *fakeUpstream) serve(c net.Conn) {
 		f.reqs = append(f.reqs, r)
 		f.mu.Unlock()
 
-		if f.authAll {
-			_, _ = c.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\n\r\n"))
+		const resp407 = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\n\r\n"
+		f.mu.Lock()
+		silent := f.silent[r.target]
+		f.mu.Unlock()
+		switch {
+		case f.authAll || f.rotated.Load():
+			_, _ = c.Write([]byte(resp407))
+			return
+		case r.method == http.MethodConnect && f.authTargets[r.target]:
+			_, _ = c.Write([]byte(resp407))
+			return
+		case r.method == http.MethodConnect && f.requireAuth[r.target] && len(r.auths) == 0:
+			_, _ = c.Write([]byte(resp407))
+			return
+		case r.method == http.MethodConnect && silent && len(r.auths) > 0:
+			_, _ = io.Copy(io.Discard, br)
 			return
 		}
 		if r.method == http.MethodConnect {
@@ -1406,6 +1430,145 @@ func TestEgressUpstream_AuthWithoutCredentialsNeverBlocksAll(t *testing.T) {
 	}
 	assert.Equal(t, 502, connectCode(t, env, "pub.test:443"))
 	assert.Len(t, fu.requests(), 4, "the refused target itself stays blocked")
+}
+
+func TestEgressUpstream_ProbePassesPolicyAuthDoesNotLatch(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{
+		authTargets: map[string]bool{"1.1.1.1:443": true, "9.9.9.9:443": true, "4.4.4.4:443": true},
+		requireAuth: map[string]bool{"probe.test:443": true},
+	})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	up.AuthProbe, up.ProbeQuiet = "probe.test:443", time.Hour
+	lookup := map[string][]string{"b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"}, "e.test": {"5.5.5.5"}}
+	start := func() *proxyEnv {
+		return startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+	}
+	env1, env2 := start(), start()
+
+	for _, d := range []string{"b.test:443", "c.test:443", "d.test:443"} {
+		assert.Equal(t, 502, connectCode(t, env1, d))
+	}
+	// one probe (without, then with credentials); its pass covers the next policy 407s (two since the pass: no rerun)
+	assert.Equal(t, []string{"1.1.1.1:443", "probe.test:443", "probe.test:443", "9.9.9.9:443", "4.4.4.4:443"}, fu.targets())
+	reqs := fu.requests()
+	assert.Empty(t, reqs[1].auths, "the first probe proves the target requires auth")
+	assert.NotEmpty(t, reqs[2].auths)
+	assert.Equal(t, 200, connectCode(t, env2, "e.test:443"), "policy 407s must not cut other jobs off the upstream")
+	assert.Equal(t, 502, connectCode(t, env2, "b.test:443"), "the refused destination itself stays blocked")
+	assert.Equal(t, "5.5.5.5:443", fu.targets()[len(fu.targets())-1])
+}
+
+func TestEgressUpstream_ProbeRerunsAfterSeveral407sSincePass(t *testing.T) {
+	be := newBackend(t)
+	// the password changes right after a passing probe: the quiet window must not hide it for long
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{
+		authTargets: map[string]bool{"1.1.1.1:443": true},
+		requireAuth: map[string]bool{"probe.test:443": true},
+	})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	up.AuthProbe, up.ProbeQuiet = "probe.test:443", time.Hour
+	lookup := map[string][]string{
+		"b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"}, "f.test": {"6.6.6.6"}, "g.test": {"7.7.7.7"},
+	}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+
+	assert.Equal(t, 502, connectCode(t, env, "b.test:443")) // policy 407; probe passes; window opens
+	fu.rotated.Store(true)
+	for _, d := range []string{"c.test:443", "d.test:443", "f.test:443"} {
+		assert.Equal(t, 502, connectCode(t, env, d))
+	}
+	// c and d: inside the window, counted; f is the third since the pass: probe now, its 407 latches
+	assert.Equal(t, []string{"1.1.1.1:443", "probe.test:443", "probe.test:443",
+		"9.9.9.9:443", "4.4.4.4:443", "6.6.6.6:443", "probe.test:443", "probe.test:443"}, fu.targets())
+	assert.Equal(t, 502, connectCode(t, env, "g.test:443"))
+	assert.Len(t, fu.targets(), 8, "latched: no further logins")
+}
+
+func TestEgressUpstream_ProbeLatchesChangedPassword(t *testing.T) {
+	be := newBackend(t)
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{
+		authTargets: map[string]bool{"1.1.1.1:443": true},
+		requireAuth: map[string]bool{"probe.test:443": true},
+	})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	up.AuthProbe, up.ProbeQuiet = "probe.test:443", time.Millisecond
+	lookup := map[string][]string{"b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"}}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+
+	assert.Equal(t, 502, connectCode(t, env, "b.test:443")) // policy 407; the probe passes: credentials proven
+	time.Sleep(20 * time.Millisecond)                       // past ProbeQuiet
+	fu.rotated.Store(true)
+	assert.Equal(t, 502, connectCode(t, env, "c.test:443"))
+	assert.Equal(t, []string{"1.1.1.1:443", "probe.test:443", "probe.test:443", "9.9.9.9:443", "probe.test:443", "probe.test:443"}, fu.targets())
+	conns := fu.conns.Load()
+	assert.Equal(t, 502, connectCode(t, env, "d.test:443"))
+	assert.Len(t, fu.targets(), 6, "latched after one 407: no further logins")
+	assert.Never(t, func() bool { return fu.conns.Load() != conns }, 200*time.Millisecond, 10*time.Millisecond)
+	_, last := env.proxy.UpstreamErrors()
+	assert.Contains(t, last, "latched")
+}
+
+func TestEgressUpstream_ProbeFallbacks(t *testing.T) {
+	policy407 := map[string]bool{"1.1.1.1:443": true, "9.9.9.9:443": true, "4.4.4.4:443": true, "6.6.6.6:443": true, "7.7.7.7:443": true}
+	lookup := map[string][]string{
+		"b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"}, "e.test": {"5.5.5.5"}, "f.test": {"6.6.6.6"}, "g.test": {"7.7.7.7"},
+	}
+	start := func(t *testing.T, o fakeUpstreamOpts, quiet time.Duration) (*fakeUpstream, *proxyEnv) {
+		be := newBackend(t)
+		fu := newFakeUpstream(t, be, o)
+		up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+		up.AuthProbe, up.ProbeTimeout, up.ProbeQuiet = "probe.test:443", 200*time.Millisecond, quiet
+		return fu, startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+	}
+	// never proven or misconfigured: three distinct 407s latch, as without a probe
+	for name, o := range map[string]fakeUpstreamOpts{
+		"answers_without_credentials": {authTargets: policy407},
+		"refused_before_auth":         {authTargets: policy407, refuse: map[string]bool{"probe.test:443": true}},
+		"silent_with_credentials":     {authTargets: policy407, requireAuth: map[string]bool{"probe.test:443": true}, silent: map[string]bool{"probe.test:443": true}},
+		"never_proven":                {authAll: true},
+	} {
+		for qname, quiet := range map[string]time.Duration{"quiet_default": 0, "probe_every_407": time.Nanosecond} {
+			t.Run(name+"/"+qname, func(t *testing.T) {
+				fu, env := start(t, o, quiet)
+				for _, d := range []string{"b.test:443", "c.test:443", "d.test:443"} {
+					assert.Equal(t, 502, connectCode(t, env, d))
+				}
+				n := len(fu.requests())
+				assert.Equal(t, 502, connectCode(t, env, "e.test:443"), "three distinct 407s latch")
+				assert.Len(t, fu.requests(), n, "latched: e.test never reached the upstream")
+				if o.requireAuth == nil && !o.authAll {
+					for _, r := range fu.requests() {
+						if r.target == "probe.test:443" {
+							assert.Empty(t, r.auths, "an unproven probe target never gets the credentials")
+						}
+					}
+				}
+			})
+		}
+	}
+	t.Run("probe_policy_407_one_request", func(t *testing.T) {
+		// the account may not reach authProbe: its 407 is policy, and must not latch on one request
+		_, env := start(t, fakeUpstreamOpts{authTargets: map[string]bool{"1.1.1.1:443": true, "probe.test:443": true}}, 0)
+		assert.Equal(t, 502, connectCode(t, env, "b.test:443"))
+		assert.Equal(t, 200, connectCode(t, env, "e.test:443"))
+	})
+	for qname, quiet := range map[string]time.Duration{"quiet_default": 0, "probe_every_407": time.Nanosecond} {
+		t.Run("unavailable_after_proven_retries/"+qname, func(t *testing.T) {
+			// proven once, then the probe gets no answer: 407s are not counted (a page could cause the outage)
+			o := fakeUpstreamOpts{authTargets: policy407, requireAuth: map[string]bool{"probe.test:443": true}}
+			fu, env := start(t, o, quiet)
+			assert.Equal(t, 502, connectCode(t, env, "b.test:443")) // proven
+			fu.mu.Lock()
+			fu.silent = map[string]bool{"probe.test:443": true}
+			fu.mu.Unlock()
+			// c, d: since the pass; f: the third, forces a probe that gets no answer; g: in the retry window
+			for _, d := range []string{"c.test:443", "d.test:443", "f.test:443", "g.test:443"} {
+				assert.Equal(t, 502, connectCode(t, env, d))
+			}
+			assert.Equal(t, 200, connectCode(t, env, "e.test:443"), "unavailable probes after a pass do not count")
+		})
+	}
 }
 
 func TestEgressUpstream_ByNameForwardLatched(t *testing.T) {
