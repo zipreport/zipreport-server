@@ -99,7 +99,9 @@ proxy password out of the file).
 - `test/listener_bind_test.go` — Report server and egress proxy bind loopback only
 - `test/egress_test.go` — Egress proxy, including `TestEgressUpstream_*` against an in-process fake upstream proxy
 - `test/squid_test.go` — `TestSquid_*`: upstream chaining against a real Squid; skip unless run by `make test-upstream`
+- `test/config_test.go` — Config validation, env overrides, engine wiring
 - `internal/apiserver/render_job_test.go` — In-package: `buildRenderJob` parameter clamps and bool parsing
+- `internal/application_test.go` — In-package: upstream log fields and startup helpers
 - `pkg/egress/upstream_test.go` — In-package: `plan` routing table, upstream helpers, auth latch, `Start` checks
 - `test/fixtures/` — `.zpt` files and their HTML sources
 
