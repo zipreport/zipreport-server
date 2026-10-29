@@ -1165,6 +1165,53 @@ func TestProbeWaitBeforeWrite(t *testing.T) {
 	assert.False(t, rec.running[0], "credentials were written while the probe was running")
 }
 
+// noDeadlineConn ignores SetDeadline, so a write is never stopped by the poisoned deadline connectUpstream sets
+// when ctx ends: only the credential checks can stop it.
+type noDeadlineConn struct{ net.Conn }
+
+func (noDeadlineConn) SetDeadline(time.Time) error { return nil }
+
+func TestDialUpstreamCancelledDuringProbeSendsNoCredentials(t *testing.T) {
+	rec := &probeRecord{}
+	up, p := probeUpstream(t, "probe.test:443", func(_ int, c net.Conn, _ *Upstream) {
+		req, err := http.ReadRequest(bufio.NewReader(c))
+		if err != nil {
+			return
+		}
+		rec.mu.Lock()
+		rec.auths = append(rec.auths, req.Header.Get("Proxy-Authorization") != "")
+		rec.mu.Unlock()
+		_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
+	})
+	up.ProbeTimeout = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := p.Dial
+	p.Dial = func(dctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := base(dctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		up.probeMu.Lock()
+		up.probeDone = make(chan struct{})
+		up.probeMu.Unlock()
+		cancel()
+		return noDeadlineConn{c}, nil
+	}
+	t.Cleanup(func() {
+		up.probeMu.Lock()
+		up.probeDone = nil
+		up.probeMu.Unlock()
+	})
+
+	_, err := p.dialUpstream(ctx, "x.test:443", "8.8.8.8:443")
+	require.Error(t, err)
+	time.Sleep(200 * time.Millisecond)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	assert.NotContains(t, rec.auths, true, "credentials were written after the request ended during a probe")
+}
+
 func TestParseAuthProbe(t *testing.T) {
 	for _, s := range []string{"h:1", "h:65535", "1.2.3.4:443", "[2001:db8::1]:443"} {
 		assert.NoError(t, ParseAuthProbe(s), s)

@@ -715,16 +715,22 @@ func (p *Proxy) connectUpstream(ctx context.Context, target string, creds bool, 
 	return conn, br, resp, stop, nil
 }
 
+// holdCreds waits for a running probe and reports whether credentials must not be sent for dest now: they are
+// latched for dest, or ctx ended while the probe still runs (its verdict is unknown).
+func (p *Proxy) holdCreds(ctx context.Context, dest string) bool {
+	p.policy.Upstream.waitProbe(ctx)
+	return ctx.Err() != nil || p.authLatched(dest)
+}
+
 // dialUpstream asks the upstream proxy for a tunnel to target (a vetted "ip:port", or the name in by-name mode) for
 // the requested destination dest, and returns it once the upstream answers 200.
 func (p *Proxy) dialUpstream(ctx context.Context, dest, target string) (net.Conn, error) {
 	up := p.policy.Upstream
-	up.waitProbe(ctx) // a running probe decides whether these credentials may be sent at all
-	if p.authLatched(dest) {
+	if p.holdCreds(ctx, dest) { // a running probe decides whether these credentials may be sent at all
 		return nil, errUpstreamAuth
 	}
 	// again after the dial: a probe may have started meanwhile
-	latched := func() bool { up.waitProbe(ctx); return p.authLatched(dest) }
+	latched := func() bool { return p.holdCreds(ctx, dest) }
 	conn, br, resp, stop, err := p.connectUpstream(ctx, target, true, latched, p.upstreamFailed)
 	if err != nil {
 		return nil, err
