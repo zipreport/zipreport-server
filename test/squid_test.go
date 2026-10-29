@@ -208,10 +208,11 @@ func TestSquid_AuthProbe(t *testing.T) {
 	for _, tc := range []struct {
 		name, userinfo, probe string
 		wantOriginCode        int
+		wantFirstErr          string
 	}{
-		{"policy_407s_with_probe_do_not_latch", squidUser + ":" + squidPass, originHost + ":443", http.StatusOK},
-		{"policy_407s_without_probe_latch", squidUser + ":" + squidPass, "", http.StatusBadGateway},
-		{"wrong_password_with_probe_latches", squidUser + ":wrong", originHost + ":443", http.StatusBadGateway},
+		{"policy_407s_with_probe_do_not_latch", squidUser + ":" + squidPass, originHost + ":443", http.StatusOK, "407"},
+		{"policy_407s_without_probe_latch", squidUser + ":" + squidPass, "", http.StatusBadGateway, "407"},
+		{"wrong_password_with_probe_latches", squidUser + ":wrong", originHost + ":443", http.StatusBadGateway, "authProbe misconfigured"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			up := mkUpstream(t, squidURL(tc.userinfo), "local")
@@ -221,8 +222,12 @@ func TestSquid_AuthProbe(t *testing.T) {
 				lookup[k] = v
 			}
 			env := startProxy(t, proxyOpts{upstream: up, lookup: lookup})
-			for _, d := range []string{"p1.test:443", "p2.test:443", "p3.test:443"} {
+			for i, d := range []string{"p1.test:443", "p2.test:443", "p3.test:443"} {
 				assert.Equal(t, http.StatusBadGateway, connectCode(t, env, d))
+				if i == 0 { // the probe this 407 triggered has finished
+					_, last := env.proxy.UpstreamErrors()
+					assert.True(t, strings.HasPrefix(last, tc.wantFirstErr), last)
+				}
 			}
 			assert.Equal(t, tc.wantOriginCode, connectCode(t, env, originHost+":443"))
 		})
