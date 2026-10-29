@@ -98,7 +98,7 @@ Configuration for the ZipReport rendering engine.
 | `upstreamProxy.url`    | string  | `""`    | `http://[user:pass@]host:port` or `https://...` of a proxy to chain public traffic through. Empty disables chaining. See [Upstream proxy](#upstream-proxy). |
 | `upstreamProxy.resolve`| string  | `"local"` | `"local"`: send the upstream the vetted IP. `"upstream"`: send it the host name, which **moves the security boundary to the upstream**. See [Upstream proxy](#upstream-proxy). |
 | `upstreamProxy.noProxy`| array of strings | `[]` | Public CIDRs or exact `host:port` entries dialled directly instead of through the upstream (still vetted). A CIDR whose network address is not public is rejected at startup (exact host:port entries are not checked); private destinations are always dialled directly anyway. |
-| `upstreamProxy.authProbe`| string | `""` | `host:port` your proxy requires authentication for and lets this account reach (port 443 or another port your proxy allows before its auth rule; an origin it reaches quickly). With credentials in `url`, a `407` for another destination is checked against it, so a page cannot block upstream use by requesting destinations your proxy refuses with `407`. Sent to the proxy as written; must not be on this host or be the proxy itself. See [Upstream proxy](#upstream-proxy). |
+| `upstreamProxy.authProbe`| string | `""` | `host:port` your proxy requires authentication for and lets this account reach (port 443 or another port your proxy allows before its auth rule; an origin it reaches quickly). With credentials in `url`, a `407` for another destination is checked against it, so a page cannot block upstream use by requesting destinations your proxy refuses with `407`. Sent to the proxy as written; must not be on this host or be the proxy itself (its configured name, or an IP literal of its address, at its port; another name for the proxy is not detected). An IPv6 zone (`%eth0`) is refused. See [Upstream proxy](#upstream-proxy). |
 
 #### Upstream proxy
 
@@ -188,13 +188,14 @@ http_access deny private_dst
   plain-http requests through the upstream wait for the answer. A `407` with credentials, after they have worked
   there, blocks all upstream use for 5 minutes. Any other answer with credentials means the first `407` was the proxy's
   policy for that destination, and nothing else is blocked.
-- If `authProbe` answers without credentials, or the credentials never worked there, three `407`s for different
-  destinations within 5 minutes block all upstream use, as without `authProbe` (`authProbe misconfigured` may appear
-  as the job's last upstream error). The first time the credentials are refused at `authProbe`, the server stops
-  probing until restart, so a wrong password costs no more attempts than without `authProbe`. If it cannot be reached
-  or gives any other answer without credentials after the credentials have worked, `407`s only block their own
-  destination until it answers again (`authProbe unavailable`). Once the credentials have worked at `authProbe`, a
-  later `407` there always blocks all upstream use: if you change the proxy rules for `authProbe`, restart the server.
+- If `authProbe` answers without credentials, is an IP address of the proxy itself, or the credentials never worked
+  there, three `407`s for different destinations within 5 minutes block all upstream use, as without `authProbe`
+  (`authProbe misconfigured` may appear as the job's last upstream error). The first time the credentials are refused at
+  `authProbe`, the server stops probing until restart, so a wrong password costs no more attempts than without
+  `authProbe`. If it cannot be reached or gives any other answer without credentials after the credentials have worked,
+  `407`s only block their own destination until it answers again (`authProbe unavailable`). Once the credentials have
+  worked at `authProbe`, a later `407` there always blocks all upstream use: if you change the proxy rules for
+  `authProbe`, restart the server.
 - Without `authProbe`: `407`s for three different destinations within 5 minutes block all upstream use for
   5 minutes. If your proxy answers `407` (not `403`) for destinations it denies, a page can trigger this; set
   `authProbe` or make the proxy deny with `403`. Without credentials there is no password to lock out, and a `407` only
