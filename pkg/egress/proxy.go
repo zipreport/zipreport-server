@@ -661,59 +661,82 @@ func (p *Proxy) authLatched(dest string) bool {
 	return false
 }
 
-// dialUpstream asks the upstream proxy for a tunnel to target (a vetted "ip:port", or the name in by-name mode) for
-// the requested destination dest, and returns it once the upstream answers 200.
-func (p *Proxy) dialUpstream(ctx context.Context, dest, target string) (net.Conn, error) {
+// connectUpstream dials the upstream proxy and sends CONNECT target, with credentials when creds is set and the
+// URL has them. latched runs after the dial, before anything is written. fail books a fixed-string failure. On
+// success the caller owns stop (it poisons the deadline when ctx ends) and must defer it; connectUpstream never
+// defers stop itself and calls it on every error it returns.
+func (p *Proxy) connectUpstream(ctx context.Context, target string, creds bool, latched func() bool,
+	fail func(string)) (net.Conn, *bufio.Reader, *http.Response, func() bool, error) {
 	up := p.policy.Upstream
-	if p.authLatched(dest) {
-		return nil, errUpstreamAuth
-	}
 	conn, err := p.dialUpstreamProxy(ctx)
 	if err != nil {
 		// fixed strings: err.Error() can contain the address
 		switch {
 		case ctx.Err() != nil: // cancelled, not an upstream failure
 		case errors.Is(err, errUpstreamTLS):
-			p.upstreamFailed("tls handshake failed")
+			fail("tls handshake failed")
 		default:
-			p.upstreamFailed("dial failed")
+			fail("dial failed")
 		}
-		return nil, err
+		return nil, nil, nil, nil, err
 	}
 	// the deadline first: set after the AfterFunc, it could overwrite a cancellation that fired in between
 	_ = conn.SetDeadline(time.Now().Add(respHeaderLimit))
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
-	defer stop()
-	if p.authLatched(dest) { // again: a 407 may have arrived during the dial and TLS handshake; do not send credentials
+	if latched() { // again: a 407 may have arrived during the dial and TLS handshake; do not send credentials
+		stop()
 		_ = conn.Close()
-		return nil, errUpstreamAuth
+		return nil, nil, nil, nil, errUpstreamAuth
 	}
 
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: target}, Host: target, Header: http.Header{}}
-	if up.URL.User != nil {
+	if creds && up.URL.User != nil {
 		pw, _ := up.URL.User.Password()
 		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(up.URL.User.Username()+":"+pw)))
 	}
 	if err := req.Write(conn); err != nil {
+		stop()
 		_ = conn.Close()
 		if ctx.Err() == nil {
-			p.upstreamFailed("no response")
+			fail("no response")
 		}
-		return nil, errors.New("upstream proxy request failed")
+		return nil, nil, nil, nil, errors.New("upstream proxy request failed")
 	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
+		stop()
 		_ = conn.Close()
 		if ctx.Err() == nil {
-			p.upstreamFailed("no response")
+			fail("no response")
 		}
-		return nil, errors.New("upstream proxy gave no response")
+		return nil, nil, nil, nil, errors.New("upstream proxy gave no response")
 	}
+	return conn, br, resp, stop, nil
+}
+
+// dialUpstream asks the upstream proxy for a tunnel to target (a vetted "ip:port", or the name in by-name mode) for
+// the requested destination dest, and returns it once the upstream answers 200.
+func (p *Proxy) dialUpstream(ctx context.Context, dest, target string) (net.Conn, error) {
+	up := p.policy.Upstream
+	up.waitProbe(ctx) // a running probe decides whether these credentials may be sent at all
+	if p.authLatched(dest) {
+		return nil, errUpstreamAuth
+	}
+	// again after the dial: a probe may have started meanwhile
+	latched := func() bool { up.waitProbe(ctx); return p.authLatched(dest) }
+	conn, br, resp, stop, err := p.connectUpstream(ctx, target, true, latched, p.upstreamFailed)
+	if err != nil {
+		return nil, err
+	}
+	defer stop()
 	if resp.StatusCode == http.StatusProxyAuthRequired {
 		_ = conn.Close()
-		up.record407(dest, time.Now())
+		probe := up.record407(dest, time.Now())
 		p.upstreamFailed(resp.Status)
+		if probe {
+			p.probeAuth(ctx)
+		}
 		return nil, errUpstreamAuth
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -730,6 +753,100 @@ func (p *Proxy) dialUpstream(ctx context.Context, dest, target string) (net.Conn
 		return &bufferedConn{Conn: conn, r: br}, nil
 	}
 	return conn, nil
+}
+
+// probeAuth asks the operator's AuthProbe whether the credentials still work: a 407 there (once they have worked
+// there) latches every destination; any other answer leaves the 407 that triggered it as the upstream's policy.
+// Neither the job ending nor a page aborting requests cuts it short; each exchange has its own timeout.
+func (p *Proxy) probeAuth(ctx context.Context) {
+	up := p.policy.Upstream
+	now := time.Now()
+	up.probeMu.Lock()
+	if up.probeDone != nil {
+		up.probeMu.Unlock()
+		return // a probe is running; its verdict covers this 407 too
+	}
+	if now.UnixNano() < up.probeQuietEnd.Load() {
+		switch up.probeVerdict.Load() {
+		case verdictPass: // handled below
+		case verdictRetry:
+			up.probeMu.Unlock()
+			return // counting now would let a page that made the probe fail trip the latch
+		default: // verdictCount, or no verdict recorded
+			up.probeMu.Unlock()
+			up.latchIfSpread(now) // no proof to rely on: count as without a probe
+			return
+		}
+		// lock order probeMu -> u.mu is safe: nothing takes probeMu while holding u.mu
+		if up.failsSincePass(now) < authLatchTargets {
+			up.probeMu.Unlock()
+			return // a probe passed moments ago; this 407 is policy until more show up
+		}
+		// several 407s since the pass: probe now (probeMu still held)
+	}
+	done := make(chan struct{})
+	up.probeDone = done
+	up.probeMu.Unlock()
+	defer func() {
+		up.probeMu.Lock()
+		up.probeQuietEnd.Store(time.Now().Add(up.probeQuiet()).UnixNano())
+		up.probeDone = nil
+		close(done)
+		up.probeMu.Unlock()
+	}()
+
+	base := context.WithoutCancel(ctx)
+	global := func() bool { return time.Now().UnixNano() < up.authBlockedUntil.Load() }
+	noop := func(string) {}
+	ask := func(creds bool) int { // status code, 0 when there was no answer
+		actx, cancel := context.WithTimeout(base, up.probeTimeout())
+		defer cancel()
+		conn, _, resp, stop, err := p.connectUpstream(actx, up.AuthProbe, creds, global, noop)
+		if err != nil {
+			return 0
+		}
+		stop()
+		_ = conn.Close()
+		return resp.StatusCode
+	}
+	misconfigured := func() {
+		up.probeVerdict.Store(verdictCount)
+		p.upstreamFailed("authProbe misconfigured")
+		up.latchIfSpread(time.Now())
+	}
+	unavailable := func() {
+		p.upstreamFailed("authProbe unavailable")
+		if !up.probeProven.Load() {
+			up.probeVerdict.Store(verdictCount)
+			up.latchIfSpread(time.Now()) // never worked: a wrong password must still latch
+			return
+		}
+		// proven before: retry later; counting would let a page that exhausts the upstream's connection slots
+		// trip the latch
+		up.probeVerdict.Store(verdictRetry)
+	}
+	switch code := ask(false); {
+	case code == http.StatusOK:
+		misconfigured()
+		return
+	case code != http.StatusProxyAuthRequired:
+		unavailable()
+		return
+	}
+	switch code := ask(true); {
+	case code == 0:
+		unavailable()
+	case code == http.StatusProxyAuthRequired && up.probeProven.Load():
+		up.probeVerdict.Store(verdictCount)
+		up.latchAuth(time.Now())
+		p.upstreamFailed("407 (probe)")
+	case code == http.StatusProxyAuthRequired:
+		misconfigured()
+	default: // any other answer: the proxy accepted the credentials before applying its policy
+		up.probeProven.Store(true)
+		up.probeOKAt.Store(time.Now().UnixNano())
+		up.probeVerdict.Store(verdictPass)
+	}
 }
 
 // dialViaUpstream tries each target through its own upstream tunnel, in order, like dialTargets, but stops at once
@@ -839,6 +956,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case rt.upstream && rt.byName:
 		transport = p.upstreamTransport
+		p.policy.Upstream.waitProbe(req.Context())
 		if p.authLatched(dest) {
 			http.Error(w, "bad gateway", http.StatusBadGateway)
 			return

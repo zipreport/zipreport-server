@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -75,6 +76,14 @@ const (
 	upstreamCacheTTL     = 30 * time.Second // how long one answer for the upstream's own name is reused
 	maxSeenUpstreamAddrs = 64
 	maxAuthFails         = 1024 // destinations remembered with a 407; the oldest is forgotten first
+	defaultProbeQuiet    = 2 * time.Second
+	defaultProbeTimeout  = 5 * time.Second
+)
+
+const (
+	verdictPass  int32 = iota + 1 // credentials accepted at AuthProbe: 407s are policy (until enough pile up)
+	verdictCount                  // no proof available: count 407s as without a probe
+	verdictRetry                  // AuthProbe did not answer after the credentials were proven: count nothing
 )
 
 // Upstream routes vetted public traffic through an operator's HTTP(S) proxy. One value is shared by every job's
@@ -85,14 +94,39 @@ type Upstream struct {
 	NoProxy      []Rule        // public destinations dialled directly instead (still vetted)
 	AuthCooldown time.Duration // 0: 5m; how long a 407 blocks further attempts; test seam
 	AuthProbe    string        // operator's "host:port" that requires auth; "" keeps the distinct-destination latch
+	ProbeQuiet   time.Duration // 0: 2s; a new probe waits this long after the last verdict; test seam
+	ProbeTimeout time.Duration // 0: 5s; per probe exchange; test seam
 
-	authBlockedUntil atomic.Int64 // unix nanos; set once authLatchTargets distinct destinations got a 407 (credentials only)
+	// unix nanos; with credentials, set once authLatchTargets distinct destinations got a 407 (no AuthProbe) or when
+	// the AuthProbe says the credentials are wrong
+	authBlockedUntil atomic.Int64
+
+	probeMu       sync.Mutex
+	probeDone     chan struct{} // non-nil while a probe runs; closed with its verdict
+	probeQuietEnd atomic.Int64  // unix nanos: no new probe before this (under probeMu to start one)
+	probeVerdict  atomic.Int32  // verdictPass, verdictCount or verdictRetry: how 407s in the quiet window are treated
+	probeProven   atomic.Bool   // the credentials have passed at AuthProbe at least once
+	probeOKAt     atomic.Int64  // unix nanos of the last pass; 407s before it were policy
 
 	mu        sync.Mutex
 	authFails map[string]time.Time // requested destination ("host:port") -> its last 407; expired entries pruned lazily
 	cached    []netip.Addr         // last answer for the upstream's name, as resolved
 	cachedAt  time.Time
 	seen      []netip.Addr // addresses that name has resolved to (unmapped, zone dropped), least recently seen first
+}
+
+func (u *Upstream) probeQuiet() time.Duration {
+	if u.ProbeQuiet > 0 {
+		return u.ProbeQuiet
+	}
+	return defaultProbeQuiet
+}
+
+func (u *Upstream) probeTimeout() time.Duration {
+	if u.ProbeTimeout > 0 {
+		return u.ProbeTimeout
+	}
+	return defaultProbeTimeout
 }
 
 func (u *Upstream) cooldown() time.Duration {
@@ -118,8 +152,9 @@ func (u *Upstream) authBlocked(target string, now time.Time) bool {
 // destination's addresses rotate). A 407 can also be the upstream's policy for that one destination, so a single
 // destination never blocks the rest: only authLatchTargets distinct destinations within the cooldown (a wrong
 // password fails everywhere) trip the latch. Without credentials there is no password to lock out, so a 407 blocks
-// only its own destination.
-func (u *Upstream) record407(dest string, now time.Time) {
+// only its own destination. With an AuthProbe the distinct-destination rule is replaced by the probe: record407
+// then returns true and the caller asks the probe whether the credentials still work.
+func (u *Upstream) record407(dest string, now time.Time) (probe bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.authFails == nil {
@@ -141,8 +176,59 @@ func (u *Upstream) record407(dest string, now time.Time) {
 		delete(u.authFails, oldest)
 	}
 	u.authFails[dest] = now
-	if u.URL.User != nil && len(u.authFails) >= authLatchTargets {
-		u.authBlockedUntil.Store(now.Add(u.cooldown()).UnixNano())
+	if u.URL.User == nil {
+		return false // no password to lock out: the 407 blocks only its own destination
+	}
+	if u.AuthProbe != "" {
+		return true // the operator's probe tells a wrong password from the upstream's policy for dest
+	}
+	if len(u.authFails) >= authLatchTargets {
+		u.latchAuth(now) // a wrong password fails everywhere
+	}
+	return false
+}
+
+// latchAuth blocks every destination for the cooldown. Atomic only: record407 calls it with u.mu held.
+func (u *Upstream) latchAuth(now time.Time) {
+	u.authBlockedUntil.Store(now.Add(u.cooldown()).UnixNano())
+}
+
+// failsSincePass counts the destinations that got a 407 after the last probe pass, within the cooldown of now.
+func (u *Upstream) failsSincePass(now time.Time) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	okAt := u.probeOKAt.Load()
+	n := 0
+	for _, at := range u.authFails {
+		if at.UnixNano() > okAt && now.Sub(at) < u.cooldown() {
+			n++
+		}
+	}
+	return n
+}
+
+// latchIfSpread latches once authLatchTargets destinations got a 407 since the last pass (credentials only).
+func (u *Upstream) latchIfSpread(now time.Time) {
+	if u.URL.User != nil && u.failsSincePass(now) >= authLatchTargets {
+		u.latchAuth(now)
+	}
+}
+
+// waitProbe blocks while a probe runs: its verdict decides whether credentials may be sent at all. Bounded by ctx
+// and by the longest a probe can take.
+func (u *Upstream) waitProbe(ctx context.Context) {
+	u.probeMu.Lock()
+	done := u.probeDone
+	u.probeMu.Unlock()
+	if done == nil {
+		return
+	}
+	t := time.NewTimer(2*u.probeTimeout() + time.Second)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-t.C:
 	}
 }
 
