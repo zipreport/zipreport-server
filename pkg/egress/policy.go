@@ -255,8 +255,8 @@ func ParseAuthProbe(s string) error {
 	if n > 65535 {
 		return errors.New("authProbe port must be 1-65535")
 	}
-	if _, err := netip.ParseAddr(host); err != nil && !PlainHostName(host) {
-		return errors.New("authProbe host is not a valid name or address")
+	if a, err := netip.ParseAddr(host); err != nil && !PlainHostName(host) || err == nil && a.Zone() != "" {
+		return errors.New("authProbe host is not a valid name or address") // a zone never means anything to the upstream
 	}
 	if NamesThisHost(host) {
 		return errors.New("authProbe must not be on this host")

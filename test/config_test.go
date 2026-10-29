@@ -415,6 +415,7 @@ func TestConfig_UpstreamAuthProbeValidation(t *testing.T) {
 		{"127.0.0.1:443", withCreds, "on this host"},
 		{"127.1:443", withCreds, "valid name"},
 		{"0x7f000001:443", withCreds, "valid name"},
+		{"[fe80::1%eth0]:443", withCreds, "valid name"},
 		{"proxy.test:3128", withCreds, "upstream proxy itself"},
 		{"PROXY.test.:3128", withCreds, "upstream proxy itself"},
 		{"[2001:db8:0::5]:3128", "http://u:p@[2001:db8::5]:3128", "upstream proxy itself"},

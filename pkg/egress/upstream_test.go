@@ -1380,6 +1380,7 @@ func TestParseAuthProbe(t *testing.T) {
 	for _, s := range []string{
 		"zq9", ":443", "zq9:0", "zq9:+1", "zq9:01", "zq9:65536", "zq9:x", "zq 9:1", "localhost:1", "127.0.0.1:1",
 		"[::1]:1", "0.0.0.0:1", "[zq9]:1", "[1.2.3.4]:443", "localhost.:1", "127.1:1", "0x7f000001:1", "127.0.0.1.:1",
+		"[fe80::1%eth0]:443", "[fe80::1%25eth0]:443",
 	} {
 		err := ParseAuthProbe(s)
 		require.Error(t, err, s)
