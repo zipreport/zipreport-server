@@ -84,6 +84,7 @@ type Upstream struct {
 	ByName       bool          // resolve "upstream": hand the upstream the host name instead of the vetted IP
 	NoProxy      []Rule        // public destinations dialled directly instead (still vetted)
 	AuthCooldown time.Duration // 0: 5m; how long a 407 blocks further attempts; test seam
+	AuthProbe    string        // operator's "host:port" that requires auth; "" keeps the distinct-destination latch
 
 	authBlockedUntil atomic.Int64 // unix nanos; set once authLatchTargets distinct destinations got a 407 (credentials only)
 
@@ -143,6 +144,35 @@ func (u *Upstream) record407(dest string, now time.Time) {
 	if u.URL.User != nil && len(u.authFails) >= authLatchTargets {
 		u.authBlockedUntil.Store(now.Add(u.cooldown()).UnixNano())
 	}
+}
+
+// ParseAuthProbe validates zipReport.upstreamProxy.authProbe: a "host:port" the upstream requires authentication
+// for, sent to it as written and never dialled directly. Errors never echo the input.
+func ParseAuthProbe(s string) error {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || net.JoinHostPort(host, port) != s {
+		return errors.New("authProbe must be host:port")
+	}
+	n := 0
+	if len(port) < 1 || len(port) > 5 || port[0] == '0' {
+		return errors.New("authProbe port must be 1-65535")
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return errors.New("authProbe port must be 1-65535")
+		}
+		n = n*10 + int(port[i]-'0')
+	}
+	if n > 65535 {
+		return errors.New("authProbe port must be 1-65535")
+	}
+	if _, err := netip.ParseAddr(host); err != nil && !PlainHostName(host) {
+		return errors.New("authProbe host is not a valid name or address")
+	}
+	if NamesThisHost(host) {
+		return errors.New("authProbe must not be on this host")
+	}
+	return nil
 }
 
 // addrs returns the upstream's addresses to dial (the cached answer while fresh, else a new lookup) and, for the

@@ -399,6 +399,45 @@ func TestConfig_HTTPProxyEnvIgnored(t *testing.T) {
 	assert.Empty(t, cfg.ZipReport.UpstreamProxy.NoProxy)
 }
 
+func TestConfig_UpstreamAuthProbeValidation(t *testing.T) {
+	const withCreds = "http://u:p@proxy.test:3128"
+	for _, tc := range []struct{ probe, url, want string }{
+		{"probe.test:443", withCreds, ""},
+		{"1.2.3.4:443", withCreds, ""},
+		{"zq9probe", withCreds, "host:port"},
+		{"zq9probe:0", withCreds, "1-65535"},
+		{"zq9probe:+443", withCreds, "1-65535"},
+		{"zq9probe:0443", withCreds, "1-65535"},
+		{"zq9probe:65536", withCreds, "1-65535"},
+		{"zq9 probe:443", withCreds, "valid name"},
+		{"localhost:443", withCreds, "on this host"},
+		{"LOCALHOST.:443", withCreds, "on this host"},
+		{"127.0.0.1:443", withCreds, "on this host"},
+		{"127.1:443", withCreds, "valid name"},
+		{"0x7f000001:443", withCreds, "valid name"},
+		{"proxy.test:3128", withCreds, "upstream proxy itself"},
+		{"PROXY.test.:3128", withCreds, "upstream proxy itself"},
+		{"probe.test:443", "http://proxy.test:3128", "needs credentials"},
+		{"probe.test:443", "", "needs credentials"},
+	} {
+		t.Run(tc.probe+"|"+tc.url, func(t *testing.T) {
+			cfg := configWithSecret(strongSecret)
+			cfg.ZipReport.UpstreamProxy.URL = tc.url
+			cfg.ZipReport.UpstreamProxy.AuthProbe = tc.probe
+			err := cfg.Validate()
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			if strings.HasPrefix(tc.probe, "zq9") {
+				assert.NotContains(t, err.Error(), tc.probe)
+			}
+		})
+	}
+}
+
 func TestConfigureEngine_UpstreamPolicy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping browser-based test in short mode")
@@ -419,6 +458,11 @@ func TestConfigureEngine_UpstreamPolicy(t *testing.T) {
 	require.NotNil(t, up)
 	assert.True(t, up.ByName)
 	assert.Equal(t, "p.test:3128", up.URL.Host)
+
+	cfg.ZipReport.UpstreamProxy.URL = "http://u:p@p.test:3128"
+	cfg.ZipReport.UpstreamProxy.AuthProbe = "probe.test:443"
+	require.NoError(t, internal.ConfigureEngine(engine, cfg))
+	assert.Equal(t, "probe.test:443", engine.EgressPolicy().Upstream.AuthProbe)
 }
 
 func TestConfig_NullApiServerWithEnvKey(t *testing.T) {

@@ -43,3 +43,18 @@ func TestUpstreamOnThisHost(t *testing.T) {
 	}
 	assert.False(t, upstreamOnThisHost(addrs("203.0.113.2", "2001:db8::2"), ifaces))
 }
+
+func TestUpstreamFromConfig(t *testing.T) {
+	c := NewZipReportConfig()
+	c.UpstreamProxy.URL = "http://u:p@proxy.test:3128"
+	c.UpstreamProxy.AuthProbe = "probe.test:443"
+	up, err := upstreamFromConfig(c)
+	require.NoError(t, err)
+	require.NotNil(t, up)
+	assert.Equal(t, "probe.test:443", up.AuthProbe)
+
+	c.UpstreamProxy.URL = ""
+	up, err = upstreamFromConfig(c)
+	require.NoError(t, err)
+	assert.Nil(t, up)
+}

@@ -189,6 +189,16 @@ func (z *ZipReport) checkByNameUpstream(up *egress.Upstream) {
 	z.logger.Warn("zipReport.upstreamProxy.resolve is \"upstream\": the upstream proxy decides where host names go, so a rendered page can reach anything the upstream can reach; configure destination ACLs on the upstream and never use this mode with an upstream that shares this server's network namespace")
 }
 
+// upstreamFromConfig builds the shared upstream from validated settings; nil when chaining is off.
+func upstreamFromConfig(c *ZipReportConfig) (*egress.Upstream, error) {
+	up, err := egress.ParseUpstream(c.UpstreamProxy.URL, c.UpstreamProxy.Resolve, c.UpstreamProxy.NoProxy)
+	if err != nil || up == nil {
+		return up, err
+	}
+	up.AuthProbe = c.UpstreamProxy.AuthProbe
+	return up, nil
+}
+
 // ConfigureEngine applies the zipReport settings to the render engine.
 func ConfigureEngine(e *render.Engine, cfg *Config) error {
 	if cfg.ZipReport.EnableConsoleLogging {
@@ -208,7 +218,7 @@ func ConfigureEngine(e *render.Engine, cfg *Config) error {
 		}
 		policy.Allow = append(policy.Allow, rule)
 	}
-	up, err := egress.ParseUpstream(cfg.ZipReport.UpstreamProxy.URL, cfg.ZipReport.UpstreamProxy.Resolve, cfg.ZipReport.UpstreamProxy.NoProxy)
+	up, err := upstreamFromConfig(cfg.ZipReport)
 	if err != nil {
 		return fmt.Errorf("zipReport.upstreamProxy: %w", err)
 	}

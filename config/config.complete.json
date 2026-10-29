@@ -50,7 +50,8 @@
     "upstreamProxy": {
       "url": "",
       "resolve": "local",
-      "noProxy": []
+      "noProxy": [],
+      "authProbe": ""
     }
   },
   "log": {

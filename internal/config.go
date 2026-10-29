@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"slices"
 	"strconv"
@@ -64,9 +65,10 @@ type ZipReportConfig struct {
 
 // UpstreamProxyConfig chains the per-job egress proxy to an operator's proxy. An empty URL disables chaining.
 type UpstreamProxyConfig struct {
-	URL     string   `json:"url"`     // http://[user:pass@]host:port or https://...; ZIPREPORT_UPSTREAM_PROXY overrides it
-	Resolve string   `json:"resolve"` // "local" (default): tunnel to the vetted IP; "upstream": hand over the host name
-	NoProxy []string `json:"noProxy"` // public CIDRs or exact host:port dialled directly (still vetted)
+	URL       string   `json:"url"`       // http://[user:pass@]host:port or https://...; ZIPREPORT_UPSTREAM_PROXY overrides it
+	Resolve   string   `json:"resolve"`   // "local" (default): tunnel to the vetted IP; "upstream": hand over the host name
+	NoProxy   []string `json:"noProxy"`   // public CIDRs or exact host:port dialled directly (still vetted)
+	AuthProbe string   `json:"authProbe"` // host:port the upstream requires auth for; a 407 elsewhere is checked against it
 }
 
 type Config struct {
@@ -85,7 +87,7 @@ func NewZipReportConfig() *ZipReportConfig {
 		Concurrency:          render.DefaultConcurrency,
 		BaseHttpPort:         render.DefaultBasePort,
 		EgressAllow:          []string{},
-		UpstreamProxy:        UpstreamProxyConfig{URL: "", Resolve: "local", NoProxy: []string{}},
+		UpstreamProxy:        UpstreamProxyConfig{URL: "", Resolve: "local", NoProxy: []string{}, AuthProbe: ""},
 	}
 }
 
@@ -116,6 +118,19 @@ func (c *ZipReportConfig) Validate() error {
 	}
 	if _, err := egress.ParseUpstream(c.UpstreamProxy.URL, c.UpstreamProxy.Resolve, c.UpstreamProxy.NoProxy); err != nil {
 		return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+	}
+	if p := c.UpstreamProxy.AuthProbe; p != "" {
+		if err := egress.ParseAuthProbe(p); err != nil {
+			return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+		}
+		up, _ := egress.ParseUpstream(c.UpstreamProxy.URL, c.UpstreamProxy.Resolve, c.UpstreamProxy.NoProxy)
+		if up == nil || up.URL.User == nil {
+			return errors.New("zipReport.upstreamProxy: authProbe needs credentials in url or ZIPREPORT_UPSTREAM_PROXY")
+		}
+		host, port, _ := net.SplitHostPort(p)
+		if strings.EqualFold(strings.TrimSuffix(host, "."), up.Hostname()) && port == up.URL.Port() {
+			return errors.New("zipReport.upstreamProxy: authProbe must not be the upstream proxy itself")
+		}
 	}
 	return nil
 }
