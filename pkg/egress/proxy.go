@@ -188,7 +188,11 @@ func (p *Proxy) StartContext(ctx context.Context) (string, error) {
 		p.upstreamTransport = &http.Transport{
 			Proxy: http.ProxyURL(up.URL), // never the process environment
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return p.dialUpstreamProxyRaw(ctx)
+				c, err := p.dialUpstreamProxyRaw(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return probeGatedConn{Conn: c, p: p}, nil
 			},
 			TLSClientConfig:       p.upstreamTLSConfig(),
 			TLSHandshakeTimeout:   p.upstreamTLSTimeout(),
@@ -643,6 +647,24 @@ func (p *Proxy) dialUpstreamProxy(ctx context.Context) (net.Conn, error) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return tc, nil
+}
+
+// probeGatedConn carries by-name requests to the upstream. net/http writes their Proxy-Authorization on a pooled
+// or freshly dialled connection, after forward's own check, so every write waits for a running probe and fails
+// once the credentials are latched or the proxy is closed.
+type probeGatedConn struct {
+	net.Conn
+	p *Proxy
+}
+
+func (c probeGatedConn) Write(b []byte) (int, error) {
+	up := c.p.policy.Upstream
+	up.waitProbe(c.p.base)
+	// a closed or retired proxy also ends the wait while the probe still runs: its verdict is unknown
+	if c.p.base.Err() != nil || time.Now().UnixNano() < up.authBlockedUntil.Load() {
+		return 0, errUpstreamAuth
+	}
+	return c.Conn.Write(b)
 }
 
 type bufferedConn struct {
