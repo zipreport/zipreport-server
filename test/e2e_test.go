@@ -558,3 +558,60 @@ func TestRenderJob_CancelledRequestFreesSlot(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, res.BrowserContextIDs, "cancelled job's browser context must be disposed")
 }
+
+// TestE2E_PageLoadRespectsJobTimeout tests that a page that never finishes loading ends with ErrJobTimeout
+func TestE2E_PageLoadRespectsJobTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping job timeout test in short mode")
+	}
+	for _, tc := range []struct {
+		name string
+		js   bool
+	}{{"regular", false}, {"jsEvent", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, engine, _, cancel := setupTestServer(t)
+			defer cancel()
+			defer engine.Shutdown()
+
+			job := newInlineJob(t, `<html><body>x<script>for(;;){}</script></body></html>`)
+			job.UseJSEvent = tc.js
+			job.JobTimeoutS = 3
+			job.JsTimeoutS = 60
+
+			start := time.Now()
+			result := engine.RenderJob(job)
+			elapsed := time.Since(start)
+
+			assert.False(t, result.Success)
+			assert.True(t, errors.Is(result.Error, render.ErrJobTimeout), "error: %v", result.Error)
+			assert.Contains(t, result.Error.Error(), "waiting for page load")
+			assert.Greater(t, elapsed, 2*time.Second)
+			assert.Less(t, elapsed, 15*time.Second)
+		})
+	}
+}
+
+// TestE2E_PDFRespectsJobTimeout tests that a page busy at print time ends with ErrJobTimeout
+func TestE2E_PDFRespectsJobTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping job timeout test in short mode")
+	}
+
+	_, engine, _, cancel := setupTestServer(t)
+	defer cancel()
+	defer engine.Shutdown()
+
+	job := newInlineJob(t, `<html><body>x<script>window.addEventListener('load',function(){setTimeout(function(){for(;;){}},50)})</script></body></html>`)
+	job.JobTimeoutS = 3
+	job.JobSettlingTimeMs = 500
+
+	start := time.Now()
+	result := engine.RenderJob(job)
+	elapsed := time.Since(start)
+
+	assert.False(t, result.Success)
+	assert.True(t, errors.Is(result.Error, render.ErrJobTimeout), "error: %v", result.Error)
+	assert.Contains(t, result.Error.Error(), "printing pdf")
+	assert.Greater(t, elapsed, 2*time.Second)
+	assert.Less(t, elapsed, 15*time.Second)
+}
