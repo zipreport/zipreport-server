@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0]
+
 ### Added
 - New `zipReport.upstreamProxy` (`url`, `resolve`, `noProxy`) chains the per-job egress proxy to an operator's HTTP(S) proxy. Only public destinations use the upstream; by default it receives the vetted IP, never a name. `resolve: "upstream"` hands it host names and moves the security boundary to the upstream, so it needs destination ACLs there (see "Upstream proxy" in `docs/configuration.md`)
 - New `zipReport.upstreamProxy.authProbe` (`host:port` your proxy requires authentication for): with credentials configured, a `407` for another destination is checked against it, so, once `authProbe` has passed, a page cannot block all upstream use by requesting destinations the proxy refuses with `407`
@@ -18,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An upstream proxy name written with a trailing dot is looked up as written, so resolver search domains (e.g. Kubernetes `ndots`) cannot redirect it
 - A running job also refuses an upstream proxy address its name started resolving to after the job began
 - Config validation refuses `resolve: "upstream"` with an upstream written as an on-host IP with a trailing dot (`http://127.0.0.1.:3128`), as it already did without the dot
+- `"apiServer": null` in the config with `ZIPREPORT_API_KEY` set fails config validation instead of panicking at startup
+- A navigation, page load or PDF step cut short by the job's deadline or by the client going away now fails with `render job timed out` / `render job cancelled` instead of a raw browser error
 
 ## [3.0.0]
 
