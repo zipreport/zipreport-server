@@ -766,6 +766,13 @@ func (p *Proxy) probeAuth(ctx context.Context) {
 		up.probeMu.Unlock()
 		return // a probe is running; its verdict covers this 407 too
 	}
+	if up.probeCredsRefused.Load() && !up.probeProven.Load() {
+		// these credentials were refused at authProbe before they ever worked: count as without a probe instead of
+		// sending them again
+		up.probeMu.Unlock()
+		up.latchIfSpread(now)
+		return
+	}
 	if now.UnixNano() < up.probeQuietEnd.Load() {
 		switch up.probeVerdict.Load() {
 		case verdictPass: // handled below
@@ -841,6 +848,7 @@ func (p *Proxy) probeAuth(ctx context.Context) {
 		up.latchAuth(time.Now())
 		p.upstreamFailed("407 (probe)")
 	case code == http.StatusProxyAuthRequired:
+		up.probeCredsRefused.Store(true)
 		misconfigured()
 	default: // any other answer: the proxy accepted the credentials before applying its policy
 		up.probeProven.Store(true)

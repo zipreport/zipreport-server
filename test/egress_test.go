@@ -1509,6 +1509,31 @@ func TestEgressUpstream_ProbeLatchesChangedPassword(t *testing.T) {
 	assert.Contains(t, last, "latched")
 }
 
+func TestEgressUpstream_ProbeStopsAfterRefusedCredentials(t *testing.T) {
+	be := newBackend(t)
+	// wrong password: every login, at the probe target too, gets a 407
+	fu := newFakeUpstream(t, be, fakeUpstreamOpts{authAll: true})
+	up := mkUpstream(t, fu.proxyURL("http", "user:s3cret@", "127.0.0.1"), "local")
+	up.AuthProbe, up.ProbeQuiet = "probe.test:443", time.Millisecond
+	lookup := map[string][]string{"b.test": {"1.1.1.1"}, "c.test": {"9.9.9.9"}, "d.test": {"4.4.4.4"}, "e.test": {"5.5.5.5"}}
+	env := startProxy(t, proxyOpts{policy: egress.Policy{Upstream: up}, lookup: lookup, dial: routingDial(fu, &dialLog{})})
+
+	for _, d := range []string{"b.test:443", "c.test:443", "d.test:443"} {
+		assert.Equal(t, 502, connectCode(t, env, d))
+		time.Sleep(30 * time.Millisecond) // past ProbeQuiet: every 407 could start a probe
+	}
+	creds := 0
+	for _, r := range fu.requests() {
+		if r.target == "probe.test:443" && len(r.auths) > 0 {
+			creds++
+		}
+	}
+	assert.Equal(t, 1, creds, "the refused credentials are not sent to authProbe again")
+	n := len(fu.requests())
+	assert.Equal(t, 502, connectCode(t, env, "e.test:443"), "three distinct 407s latch")
+	assert.Len(t, fu.requests(), n, "latched: e.test never reached the upstream")
+}
+
 func TestEgressUpstream_ProbeFallbacks(t *testing.T) {
 	policy407 := map[string]bool{"1.1.1.1:443": true, "9.9.9.9:443": true, "4.4.4.4:443": true, "6.6.6.6:443": true, "7.7.7.7:443": true}
 	lookup := map[string][]string{

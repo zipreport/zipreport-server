@@ -106,7 +106,10 @@ type Upstream struct {
 	probeQuietEnd atomic.Int64  // unix nanos: no new probe before this (under probeMu to start one)
 	probeVerdict  atomic.Int32  // verdictPass, verdictCount or verdictRetry: how 407s in the quiet window are treated
 	probeProven   atomic.Bool   // the credentials have passed at AuthProbe at least once
-	probeOKAt     atomic.Int64  // unix nanos of the last pass; 407s before it were policy
+	// set when the credentials got a 407 at AuthProbe before they ever passed there: probing stops and 407s count as
+	// without a probe (no extra logins)
+	probeCredsRefused atomic.Bool
+	probeOKAt         atomic.Int64 // unix nanos of the last pass; 407s before it were policy
 
 	mu        sync.Mutex
 	authFails map[string]time.Time // requested destination ("host:port") -> its last 407; expired entries pruned lazily

@@ -190,7 +190,9 @@ http_access deny private_dst
   policy for that destination, and nothing else is blocked.
 - If `authProbe` answers without credentials, or the credentials never worked there, three `407`s for different
   destinations within 5 minutes block all upstream use, as without `authProbe` (`authProbe misconfigured` may appear
-  as the job's last upstream error). If it cannot be reached after it has worked, `407`s only block their own
+  as the job's last upstream error). The first time the credentials are refused at `authProbe`, the server stops
+  probing until restart, so a wrong password costs no more attempts than without `authProbe`. If it cannot be reached
+  or gives any other answer without credentials after the credentials have worked, `407`s only block their own
   destination until it answers again (`authProbe unavailable`). Once the credentials have worked at `authProbe`, a
   later `407` there always blocks all upstream use: if you change the proxy rules for `authProbe`, restart the server.
 - Without `authProbe`: `407`s for three different destinations within 5 minutes block all upstream use for
