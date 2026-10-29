@@ -420,6 +420,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		go func() { defer evtWg.Done(); waitLoadEvt(); close(loadFired) }()
 		err = page.Navigate(url)
 		if err != nil {
+			if pageCtx.Err() != nil {
+				err = fmt.Errorf("navigating: %w", jobCtxErr(pageCtx))
+			}
 			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
 			return &JobResult{
 				ElapsedTime: time.Since(start).Seconds(),
@@ -430,6 +433,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		}
 		err = page.WaitLoad()
 		if err != nil {
+			if pageCtx.Err() != nil {
+				err = fmt.Errorf("waiting for page load: %w", jobCtxErr(pageCtx))
+			}
 			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
 			return &JobResult{
 				ElapsedTime: time.Since(start).Seconds(),
@@ -478,6 +484,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		// no JS event, proceed as expected
 		err = page.Navigate(url)
 		if err != nil {
+			if pageCtx.Err() != nil {
+				err = fmt.Errorf("navigating: %w", jobCtxErr(pageCtx))
+			}
 			e.logger.Error(err, "failed to navigate", log.KV{"id": jobId})
 			return &JobResult{
 				ElapsedTime: time.Since(start).Seconds(),
@@ -488,6 +497,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 		}
 		err = page.WaitLoad()
 		if err != nil {
+			if pageCtx.Err() != nil {
+				err = fmt.Errorf("waiting for page load: %w", jobCtxErr(pageCtx))
+			}
 			e.logger.Error(err, "failed to wait for page load", log.KV{"id": jobId})
 			return &JobResult{
 				ElapsedTime: time.Since(start).Seconds(),
@@ -523,6 +535,9 @@ func (e *Engine) RenderJob(job *Job) *JobResult {
 	var buf []byte = nil
 	if err == nil {
 		buf, err = io.ReadAll(pdf)
+	}
+	if err != nil && pageCtx.Err() != nil {
+		err = fmt.Errorf("printing pdf: %w", jobCtxErr(pageCtx))
 	}
 	elapsed := time.Since(start)
 	result := &JobResult{
