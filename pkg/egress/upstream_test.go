@@ -1373,6 +1373,47 @@ func TestForwardByNameWaitsForProbeBeforeWrite(t *testing.T) {
 	assert.False(t, runs[0], "the by-name request was written while the probe was running")
 }
 
+func TestWaitProbeReturnsWhenCtxEnds(t *testing.T) {
+	up, err := ParseUpstream("http://user:pw@proxy.test:3128", "local", nil)
+	require.NoError(t, err)
+	up.ProbeTimeout = time.Hour
+	done := make(chan struct{})
+	up.probeMu.Lock()
+	up.probeDone = done
+	up.probeMu.Unlock()
+	t.Cleanup(func() { close(done) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+	returned := make(chan struct{})
+	go func() { up.waitProbe(ctx); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitProbe ignored the ended context")
+	}
+}
+
+func TestWaitProbeTimerBound(t *testing.T) {
+	up, err := ParseUpstream("http://user:pw@proxy.test:3128", "local", nil)
+	require.NoError(t, err)
+	up.ProbeTimeout = 10 * time.Millisecond
+	done := make(chan struct{})
+	up.probeMu.Lock()
+	up.probeDone = done
+	up.probeMu.Unlock()
+	t.Cleanup(func() { close(done) })
+	start := time.Now()
+	returned := make(chan struct{})
+	go func() { up.waitProbe(context.Background()); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("waitProbe outlived its bound")
+	}
+	assert.GreaterOrEqual(t, time.Since(start), time.Second, "waitProbe returned before the probe could have ended")
+}
+
 func TestParseAuthProbe(t *testing.T) {
 	for _, s := range []string{"h:1", "h:65535", "1.2.3.4:443", "[2001:db8::1]:443"} {
 		assert.NoError(t, ParseAuthProbe(s), s)
