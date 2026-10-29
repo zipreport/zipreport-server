@@ -14,7 +14,7 @@ The following environment variables can be used to override configuration file v
 | Variable           | Overrides                          | Description                                    |
 |--------------------|------------------------------------|------------------------------------------------|
 | `ZIPREPORT_API_KEY`| `apiServer.authTokenSecret`| API authentication key. Takes precedence over config file. |
-| `ZIPREPORT_UPSTREAM_PROXY`| `zipReport.upstreamProxy.url`| Upstream proxy URL, so a proxy password can stay out of the config file. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are ignored. |
+| `ZIPREPORT_UPSTREAM_PROXY`| `zipReport.upstreamProxy.url`| Upstream proxy URL, so a proxy password can stay out of the config file. An empty value does not override, so it cannot turn off a URL set in the file. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are ignored. |
 
 Example:
 ```shell
@@ -97,7 +97,7 @@ Configuration for the ZipReport rendering engine.
 | `egressAllow`          | array of strings | `[]` | CIDRs or exact `host:port` entries a rendered page may reach in addition to public addresses, e.g. `["10.20.0.0/16", "assets.intranet:443"]`. A bare IP needs `/32` or `/128`. Entries can never open, on loopback and local addresses, other jobs' render ports (the job's own server is reached through its `localhost:PORT` name), the job's own proxy port, the API port or, if enabled, the metrics port. Allowing loopback ranges still exposes other local services, including other jobs' egress proxies and Chrome's DevTools port; an entry covering Kubernetes Service/pod or Docker bridge CIDRs can reach this or other replicas' API and metrics ports through non-local addresses, which the hard-deny list does not cover. |
 | `upstreamProxy.url`    | string  | `""`    | `http://[user:pass@]host:port` or `https://...` of a proxy to chain public traffic through. Empty disables chaining. See [Upstream proxy](#upstream-proxy). |
 | `upstreamProxy.resolve`| string  | `"local"` | `"local"`: send the upstream the vetted IP. `"upstream"`: send it the host name, which **moves the security boundary to the upstream**. See [Upstream proxy](#upstream-proxy). |
-| `upstreamProxy.noProxy`| array of strings | `[]` | Public CIDRs or exact `host:port` entries dialled directly instead of through the upstream (still vetted). Private CIDRs are rejected at startup: private destinations are always dialled directly anyway. |
+| `upstreamProxy.noProxy`| array of strings | `[]` | Public CIDRs or exact `host:port` entries dialled directly instead of through the upstream (still vetted). A CIDR whose network address is not public is rejected at startup (exact host:port entries are not checked); private destinations are always dialled directly anyway. |
 
 #### Upstream proxy
 
@@ -151,8 +151,12 @@ where only the proxy can resolve internet names. **This moves the security bound
   can detect a same-host upstream (it resolves to a loopback or local-interface address); a Service IP cannot be
   detected.
 - An exact `egressAllow` `host:port` entry needs a locally resolvable name in this mode.
-- Every name on a reserved port (the report port range, the job's proxy port, `apiServer.port`, `prometheus.port`) is
-  refused, even a public one.
+- Every name on a reserved port (the report port range, the job's proxy port, `apiServer.port`, and `prometheus.port`
+  when metrics are enabled) is refused, even a public one. A name with an exact `egressAllow` `host:port` entry is
+  resolved and vetted by address instead.
+- Only plain ASCII host names (letters, digits, `-`, `_`, dots) are handed to the upstream; numeric forms such as
+  `127.1` or `0x7f000001`, raw non-ASCII names and malformed hosts are refused. International domain names still work:
+  Chrome sends them in punycode (`xn--`).
 
 **Destination ACLs on the upstream are required** in this mode, covering every range the server itself refuses.
 100.64.0.0/10 holds some cloud metadata services (e.g. 100.100.100.200). The NAT64, 6to4 and IPv4-compatible forms
@@ -160,11 +164,11 @@ are needed only if the upstream can reach IPv4 through NAT64 or 6to4. For Squid:
 
 ```
 acl private_dst dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 0.0.0.0/8 192.0.0.0/24
-acl private_dst dst 198.18.0.0/15 240.0.0.0/4 168.63.129.16/32 fc00::/7 fe80::/10 fec0::/10 64:ff9b:1::/48
+acl private_dst dst 198.18.0.0/15 240.0.0.0/4 168.63.129.16/32 fc00::/7 fe80::/10 fec0::/10 64:ff9b:1::/48 224.0.0.0/4 ff00::/8
 # their IPv4-compatible, 6to4 and NAT64 forms
 acl private_dst dst ::/96 2002::/16 64:ff9b::/104 64:ff9b::a00:0/104 64:ff9b::6440:0/106 64:ff9b::7f00:0/104
 acl private_dst dst 64:ff9b::a9fe:0/112 64:ff9b::ac10:0/108 64:ff9b::c000:0/120 64:ff9b::c0a8:0/112
-acl private_dst dst 64:ff9b::c612:0/111 64:ff9b::f000:0/100 64:ff9b::a83f:8110/128
+acl private_dst dst 64:ff9b::c612:0/111 64:ff9b::f000:0/100 64:ff9b::a83f:8110/128 64:ff9b::e000:0/100
 
 http_access deny to_localhost
 http_access deny private_dst
@@ -172,8 +176,10 @@ http_access deny private_dst
 
 **Authentication**
 
-- Basic proxy auth only, from the URL userinfo (`http://user:pass@proxy:3128`). Set `ZIPREPORT_UPSTREAM_PROXY`
-  instead of `upstreamProxy.url` to keep the password out of the config file.
+- Basic proxy auth only, from the URL userinfo (`http://user:pass@proxy:3128`). Set `ZIPREPORT_UPSTREAM_PROXY` instead
+  of `upstreamProxy.url` to keep the password out of the config file. Percent-encode every character in the user name or
+  password other than letters, digits and `-._~!$&'()*+,;=` (notably `%`, `/`, `?`, `#`, `@`, spaces, and `:` in the
+  user name). With an `http://` upstream the credentials cross the network in clear text.
 - A `407` in reply to a tunnel request blocks that destination (the requested `host:port`, whatever address it
   resolves to) for 5 minutes.
 - With credentials configured, `407`s for three different destinations within 5 minutes block all upstream use for
@@ -200,8 +206,9 @@ http_access deny private_dst
   relayed to the page and so appear in the PDF.
 - If the upstream is configured as this host (a loopback name or address, `0.0.0.0` or `[::]`), its port must not be
   `apiServer.port`, `prometheus.port` (metrics enabled) or inside the report port range, or startup is refused.
-- An `https://` upstream is verified against the system trust store only. For an internal CA, add it to the image's
-  trust store.
+- An `https://` upstream is verified against the system trust store. For an internal CA, add it to the image's
+  trust store, or mount a directory holding it and set `SSL_CERT_DIR` (the default bundle is still read).
+  `SSL_CERT_FILE` replaces the default bundle for the whole process, so point it only at a full bundle.
 
 ### log
 
@@ -331,6 +338,12 @@ The secret is not part of this example: supply `apiServer.authTokenSecret` (at l
    `rod` environment variable is no longer honoured. Chrome runs with site isolation enabled, which starts more renderer
    processes per job, so container memory limits may need raising. Site isolation only contains a renderer exploit when
    Chrome's sandbox is on; in containers Chrome runs with `--no-sandbox`.
+
+7. **Renderer compromise**: Chrome runs as the server's user, so in containers (no sandbox, item 6) a renderer exploit
+   can read the config file, mounted secret files and the environment of this server's processes
+   (`/proc/<pid>/environ`). `ZIPREPORT_API_KEY` and `ZIPREPORT_UPSTREAM_PROXY` keep secrets out of the image and config
+   file, not out of reach of a compromised renderer. Keep the bundled Chrome current and give the upstream proxy account
+   only the access reports need.
 
 ## Environment Variables
 

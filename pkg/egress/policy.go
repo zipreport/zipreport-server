@@ -282,6 +282,51 @@ func LoopbackName(host string) bool {
 	return loopbackNames[h] || strings.HasSuffix(h, ".localhost")
 }
 
+// PlainHostName reports whether host is an ASCII host name the egress proxy can reason about: letters, digits,
+// '-' and '_' in non-empty dot-separated labels, one optional trailing dot, and a last label that is not a
+// number: not all digits and not "0x" followed by hex digits (127.1, 2130706433 and 0x7f000001 are addresses to
+// many resolvers and to URL parsers). By-name mode hands only these to the upstream.
+func PlainHostName(host string) bool {
+	h := strings.TrimSuffix(host, ".")
+	if h == "" {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	for _, l := range labels {
+		if l == "" {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+			if !ok {
+				return false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	allDigits := true
+	for i := 0; i < len(last); i++ {
+		if last[i] < '0' || last[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return false
+	}
+	if len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') {
+		for i := 2; i < len(last); i++ {
+			c := last[i]
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
 // NamesThisHost reports whether host, as configured, names this machine without a lookup: a LoopbackName, or an IP
 // literal that is loopback or unspecified. One trailing dot is ignored, for literals too ("127.0.0.1.").
 func NamesThisHost(host string) bool {

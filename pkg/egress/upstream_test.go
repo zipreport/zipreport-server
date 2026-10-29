@@ -28,6 +28,16 @@ func TestLoopbackName(t *testing.T) {
 	}
 }
 
+func TestPlainHostName(t *testing.T) {
+	for _, h := range []string{"example.com", "example.com.", "a-b_c.test", "xn--xample-9ua.test", "localhost", "x1.com", "a.0xg"} {
+		assert.True(t, PlainHostName(h), h)
+	}
+	for _, h := range []string{"", ".", "..", "a..b", "127.1", "2130706433", "1.2.3.4", "10.0.0.3.", "0x7f000001",
+		"127.0.0.0x1", "127.0.0.0X", "0x", "éxample.test", "%31.test", "a b", "ex!.com"} {
+		assert.False(t, PlainHostName(h), h)
+	}
+}
+
 func TestOnThisHost(t *testing.T) {
 	ifaces := []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("fe80::1%eth0")}
 	for _, s := range []string{"127.0.0.1", "127.9.9.9", "::1", "0.0.0.0", "::", "::ffff:127.0.0.1", "192.0.2.1",

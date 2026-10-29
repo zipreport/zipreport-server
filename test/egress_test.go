@@ -1088,6 +1088,45 @@ func startByName(t *testing.T, fo fakeUpstreamOpts, lookup map[string][]string, 
 	return &upstreamHarness{env: env, fu: fu, be: be, dial: log}
 }
 
+func TestEgressUpstream_UnvettableNameRefused(t *testing.T) {
+	for _, tc := range []struct{ name, req string }{
+		{"empty_url_host", "GET http:///x HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n"},
+		{"port_only_url", "GET http://:80/x HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n"},
+		{"port_only_connect", "CONNECT :443 HTTP/1.1\r\nHost: :443\r\n\r\n"},
+		{"short_ipv4_connect", "CONNECT 127.1:80 HTTP/1.1\r\nHost: 127.1:80\r\n\r\n"},
+		{"short_ipv4_get", "GET http://127.1/x HTTP/1.1\r\nHost: 127.1\r\n\r\n"},
+		{"decimal_ipv4", "GET http://2130706433/x HTTP/1.1\r\nHost: 2130706433\r\n\r\n"},
+		{"lone_dot", "GET http://./x HTTP/1.1\r\nHost: .\r\n\r\n"},
+		{"non_ascii", "GET http://\xc3\xa9xample.test/x HTTP/1.1\r\nHost: x\r\n\r\n"},
+		{"escaped_connect_host", "CONNECT /x HTTP/1.1\r\nHost: %31%32%37.0.0.1:80\r\n\r\n"},
+		{"dotted_ipv4_get", "GET http://10.0.0.3./x HTTP/1.1\r\nHost: 10.0.0.3.\r\n\r\n"},
+		{"dotted_ipv4_connect", "CONNECT 10.0.0.3.:443 HTTP/1.1\r\nHost: 10.0.0.3.:443\r\n\r\n"},
+		{"hex_ipv4_get", "GET http://0x7f000001/x HTTP/1.1\r\nHost: 0x7f000001\r\n\r\n"},
+		{"hex_last_label_connect", "CONNECT 127.0.0.0x1:80 HTTP/1.1\r\nHost: 127.0.0.0x1:80\r\n\r\n"},
+		{"escaped_loopback_name", "CONNECT /x HTTP/1.1\r\nHost: %6c%6f%63%61%6c%68%6f%73%74:80\r\n\r\n"},
+		{"empty_label_get", "GET http://a..b/x HTTP/1.1\r\nHost: a..b\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+			c, err := net.Dial("tcp", h.env.addr)
+			require.NoError(t, err)
+			defer func() { _ = c.Close() }()
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			_, err = c.Write([]byte(tc.req))
+			require.NoError(t, err)
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Empty(t, h.fu.requests(), "the upstream must not receive a name the proxy could not vet")
+		})
+	}
+	t.Run("plain_name_still_forwarded", func(t *testing.T) {
+		h := startByName(t, fakeUpstreamOpts{}, byNameLookup, egress.Policy{})
+		assert.Equal(t, 200, status(t, h.env.client, "http://pub.test/x"))
+		assert.Len(t, h.fu.requests(), 1)
+	})
+}
+
 func TestEgressUpstream_ConnectSendsVettedIP(t *testing.T) {
 	h := startLocal(t, fakeUpstreamOpts{}, map[string][]string{"pub.test": {"8.8.8.8"}}, egress.Policy{})
 	code, body := tunnelGet(t, h.env, "pub.test:443", "pub.test")
