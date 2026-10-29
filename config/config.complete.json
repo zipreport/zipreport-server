@@ -46,7 +46,13 @@
     "enableMetrics": false,
     "concurrency": 8,
     "baseHttpPort": 22000,
-    "egressAllow": []
+    "egressAllow": [],
+    "upstreamProxy": {
+      "url": "",
+      "resolve": "local",
+      "noProxy": [],
+      "authProbe": ""
+    }
   },
   "log": {
     "level": "info",

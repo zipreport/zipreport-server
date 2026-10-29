@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"zipreport-server/internal/apiserver"
@@ -50,14 +53,23 @@ var placeholderAuthSecrets = []string{
 }
 
 type ZipReportConfig struct {
-	ReadTimeoutSeconds   int      `json:"readTimeoutSeconds"`
-	WriteTimeoutSeconds  int      `json:"writeTimeoutSeconds"`
-	EnableConsoleLogging bool     `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
-	EnableHttpDebugging  bool     `json:"enableHttpDebugging"`
-	EnableMetrics        bool     `json:"enableMetrics"` // Enable Prometheus endpoint
-	Concurrency          int      `json:"concurrency"`   // Concurrent browser instances
-	BaseHttpPort         int      `json:"baseHttpPort"`  // Internal HTTP server base port
-	EgressAllow          []string `json:"egressAllow"`   // CIDRs or exact host:port a rendered page may reach beyond public addresses
+	ReadTimeoutSeconds   int                 `json:"readTimeoutSeconds"`
+	WriteTimeoutSeconds  int                 `json:"writeTimeoutSeconds"`
+	EnableConsoleLogging bool                `json:"enableConsoleLogging"` // Enable JS console logging, if loglevel allows
+	EnableHttpDebugging  bool                `json:"enableHttpDebugging"`
+	EnableMetrics        bool                `json:"enableMetrics"` // Enable Prometheus endpoint
+	Concurrency          int                 `json:"concurrency"`   // Concurrent browser instances
+	BaseHttpPort         int                 `json:"baseHttpPort"`  // Internal HTTP server base port
+	EgressAllow          []string            `json:"egressAllow"`   // CIDRs or exact host:port a rendered page may reach beyond public addresses
+	UpstreamProxy        UpstreamProxyConfig `json:"upstreamProxy"`
+}
+
+// UpstreamProxyConfig chains the per-job egress proxy to an operator's proxy. An empty URL disables chaining.
+type UpstreamProxyConfig struct {
+	URL       string   `json:"url"`       // http://[user:pass@]host:port or https://...; ZIPREPORT_UPSTREAM_PROXY overrides it
+	Resolve   string   `json:"resolve"`   // "local" (default): tunnel to the vetted IP; "upstream": hand over the host name
+	NoProxy   []string `json:"noProxy"`   // public CIDRs or exact host:port dialled directly (still vetted)
+	AuthProbe string   `json:"authProbe"` // host:port the upstream requires auth for; a 407 elsewhere is checked against it
 }
 
 type Config struct {
@@ -76,6 +88,7 @@ func NewZipReportConfig() *ZipReportConfig {
 		Concurrency:          render.DefaultConcurrency,
 		BaseHttpPort:         render.DefaultBasePort,
 		EgressAllow:          []string{},
+		UpstreamProxy:        UpstreamProxyConfig{URL: "", Resolve: "local", NoProxy: []string{}, AuthProbe: ""},
 	}
 }
 
@@ -102,6 +115,27 @@ func (c *ZipReportConfig) Validate() error {
 	for i, s := range c.EgressAllow {
 		if _, err := egress.ParseRule(s); err != nil {
 			return fmt.Errorf("zipReport.egressAllow[%d]: %w", i, err)
+		}
+	}
+	if _, err := egress.ParseUpstream(c.UpstreamProxy.URL, c.UpstreamProxy.Resolve, c.UpstreamProxy.NoProxy); err != nil {
+		return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+	}
+	if p := c.UpstreamProxy.AuthProbe; p != "" {
+		if err := egress.ParseAuthProbe(p); err != nil {
+			return fmt.Errorf("zipReport.upstreamProxy: %w", err)
+		}
+		up, _ := egress.ParseUpstream(c.UpstreamProxy.URL, c.UpstreamProxy.Resolve, c.UpstreamProxy.NoProxy)
+		if up == nil || up.URL.User == nil {
+			return errors.New("zipReport.upstreamProxy: authProbe needs credentials in url or ZIPREPORT_UPSTREAM_PROXY")
+		}
+		host, port, _ := net.SplitHostPort(p)
+		pa, perr := netip.ParseAddr(host)
+		ua, uerr := netip.ParseAddr(up.Hostname())
+		sameHost := strings.EqualFold(strings.TrimSuffix(host, "."), up.Hostname()) ||
+			perr == nil && uerr == nil && pa.Unmap() == ua.Unmap()
+		upPort, _ := strconv.Atoi(up.URL.Port())
+		if sameHost && port == strconv.Itoa(upPort) {
+			return errors.New("zipReport.upstreamProxy: authProbe must not be the upstream proxy itself")
 		}
 	}
 	return nil
@@ -184,6 +218,23 @@ func (c *Config) Validate() error {
 			return errors.New("prometheus.port must differ from apiServer.port")
 		}
 	}
+	if up, _ := egress.ParseUpstream(c.ZipReport.UpstreamProxy.URL, c.ZipReport.UpstreamProxy.Resolve, c.ZipReport.UpstreamProxy.NoProxy); up != nil {
+		if egress.NamesThisHost(up.Hostname()) {
+			port, _ := strconv.Atoi(up.URL.Port())
+			what := ""
+			switch {
+			case port >= first && port <= last:
+				what = "the report port range"
+			case port == c.ApiServer.Port:
+				what = "apiServer.port"
+			case c.ZipReport.EnableMetrics && port == c.Prometheus.Port:
+				what = "prometheus.port"
+			}
+			if what != "" {
+				return fmt.Errorf("zipReport.upstreamProxy port %d collides with %s", port, what)
+			}
+		}
+	}
 	if c.Logging == nil {
 		return errors.New("logging is required")
 	}
@@ -197,9 +248,15 @@ func (c *Config) Validate() error {
 // Environment variables take precedence over config file values.
 // Supported variables:
 //   - ZIPREPORT_API_KEY: overrides apiServer.authTokenSecret
+//   - ZIPREPORT_UPSTREAM_PROXY: overrides zipReport.upstreamProxy.url
+//
+// HTTP_PROXY, HTTPS_PROXY and NO_PROXY are deliberately ignored.
 func (c *Config) ApplyEnvOverrides() {
-	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" {
+	if apiKey := os.Getenv("ZIPREPORT_API_KEY"); apiKey != "" && c.ApiServer != nil {
 		c.ApiServer.AuthTokenSecret = apiKey
+	}
+	if up := os.Getenv("ZIPREPORT_UPSTREAM_PROXY"); up != "" && c.ZipReport != nil {
+		c.ZipReport.UpstreamProxy.URL = up
 	}
 }
 

@@ -24,10 +24,10 @@ Version 3.0.0 has breaking changes. The full list, with what to change, is in th
    it as `ZIPREPORT_API_KEY` or in your mounted config. Images tagged `latest` pick up this change as soon as 3.0.0 is
    released.
 2. **HTTP(S)_PROXY.** Rendered pages no longer use the container's `HTTP_PROXY`/`HTTPS_PROXY` (they are ignored). All of a
-   job's browser traffic goes through a per-job egress proxy that dials directly (no chaining), so deployments that depend
-   on an outbound proxy lose external assets (CDN fonts, scripts, images). Loopback, private and link-local destinations are
-   blocked unless allowed with `zipReport.egressAllow`. A Chrome started with `--proxy-server`, `--proxy-pac-url` or
-   `--no-proxy-server` is refused.
+   job's browser traffic goes through a per-job egress proxy that dials directly, so deployments that depend on an
+   outbound proxy lose external assets (CDN fonts, scripts, images) until they set `zipReport.upstreamProxy` (from
+   3.1.0). Loopback, private and link-local destinations are blocked unless allowed with `zipReport.egressAllow`. A
+   Chrome started with `--proxy-server`, `--proxy-pac-url` or `--no-proxy-server` is refused.
 3. **Listener failures exit.** If the API or metrics listener cannot start (for example the port is in use), the process
    now exits instead of logging and carrying on.
 4. **`baseHttpPort` default is 22000** (was 42000, inside the Linux ephemeral port range). A configured range that
@@ -116,8 +116,15 @@ ephemeral HTTP servers on localhost as part of the rendering process.
   including other jobs' egress proxies and Chrome's DevTools port. An entry covering Kubernetes Service/pod or Docker
   bridge CIDRs can reach this or other replicas' API and metrics ports through non-local addresses, which the
   hard-deny list does not cover. If the page does not reach its own server through the proxy, the job fails.
-- Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy; they are refused
-  and counted in the "blocked network requests" warning logged per job.
+- With `zipReport.upstreamProxy` set, public traffic is chained through the operator's proxy, by vetted IP by
+  default (`resolve: "local"`), so the rules above still hold; destinations admitted only by `egressAllow` stay direct.
+  `resolve: "upstream"` hands the proxy host names instead and moves the security boundary to the upstream proxy: it
+  needs destination ACLs there and must never be used with a proxy sharing this server's network namespace. See
+  [Upstream proxy](docs/configuration.md#upstream-proxy).
+- Chrome's own background requests (for example `www.google.com:443`) pass through the same proxy and follow the same
+  rules: refused, and counted in the "blocked network requests" warning logged per job, when the name does not resolve
+  or resolves to a non-public address; otherwise they go out (through `zipReport.upstreamProxy` when one is set). With
+  `resolve: "upstream"`, a name that does not resolve locally is handed to the upstream instead.
 - Residual risks of the egress proxy:
   - **WebRTC: pages can send STUN binding requests over UDP to arbitrary host:port, including internal addresses,
     outside the egress proxy (Chrome 156 ignores --force-webrtc-ip-handling-policy here). Only a network-level egress
@@ -239,6 +246,9 @@ The API key can also be set via the `ZIPREPORT_API_KEY` environment variable, wh
 export ZIPREPORT_API_KEY="$(openssl rand -hex 32)"
 docker run -p 6543:6543 -e ZIPREPORT_API_KEY ghcr.io/zipreport/zipreport-server:3.0.0
 ```
+
+Likewise `ZIPREPORT_UPSTREAM_PROXY` overrides `zipReport.upstreamProxy.url`, so an upstream proxy password can stay out
+of the config file.
 
 Example:
 
@@ -450,6 +460,9 @@ make test-short
 
 # Full suite, including browser-based tests (needs a Chrome that can start; same as `make test`)
 make test-integration
+
+# Upstream proxy tests against a real Squid in Docker (needs Docker and openssl; runs in a container)
+make test-upstream
 
 # Regenerate the .zpt test fixtures from their HTML sources
 make test-fixtures

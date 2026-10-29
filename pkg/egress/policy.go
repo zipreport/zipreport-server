@@ -1,12 +1,18 @@
 package egress
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Rule is one egressAllow entry: a CIDR, or an exact host:port.
@@ -42,7 +48,8 @@ func hostPortKey(host, port string) string {
 // Policy holds the operator-supplied egress configuration.
 type Policy struct {
 	Allow         []Rule
-	ReservedPorts []int // API and metrics ports: never reachable on local addresses, whatever Allow says
+	ReservedPorts []int     // API and metrics ports: never reachable on local addresses, whatever Allow says
+	Upstream      *Upstream // nil: dial vetted destinations directly
 }
 
 func (p Policy) allowsPrefix(ip netip.Addr) bool {
@@ -61,4 +68,463 @@ func (p Policy) allowsHostPort(key string) bool {
 		}
 	}
 	return false
+}
+
+const (
+	defaultAuthCooldown  = 5 * time.Minute
+	authLatchTargets     = 3                // distinct destinations answered 407 before every destination is blocked
+	upstreamCacheTTL     = 30 * time.Second // how long one answer for the upstream's own name is reused
+	maxSeenUpstreamAddrs = 64
+	maxAuthFails         = 1024 // destinations remembered with a 407; the oldest is forgotten first
+	defaultProbeQuiet    = 2 * time.Second
+	defaultProbeTimeout  = 5 * time.Second
+)
+
+const (
+	verdictPass  int32 = iota + 1 // credentials accepted at AuthProbe: 407s are policy (until enough pile up)
+	verdictCount                  // no proof available: count 407s as without a probe
+	verdictRetry                  // AuthProbe did not answer after the credentials were proven: count nothing
+)
+
+// Upstream routes vetted public traffic through an operator's HTTP(S) proxy. One value is shared by every job's
+// proxy (Policy is copied, the pointer is not), which is what makes the 407 latch and the address cache process-wide.
+type Upstream struct {
+	URL          *url.URL      // http:// or https:// proxy; userinfo, if any, is sent as Basic Proxy-Authorization
+	ByName       bool          // resolve "upstream": hand the upstream the host name instead of the vetted IP
+	NoProxy      []Rule        // public destinations dialled directly instead (still vetted)
+	AuthCooldown time.Duration // 0: 5m; how long a 407 blocks further attempts; test seam
+	AuthProbe    string        // operator's "host:port" that requires auth; "" keeps the distinct-destination latch
+	ProbeQuiet   time.Duration // 0: 2s; a new probe waits this long after the last verdict; test seam
+	ProbeTimeout time.Duration // 0: 5s; per probe exchange; test seam
+
+	// unix nanos; with credentials, set once authLatchTargets distinct destinations got a 407 (no AuthProbe) or when
+	// the AuthProbe says the credentials are wrong
+	authBlockedUntil atomic.Int64
+
+	probeMu       sync.Mutex
+	probeDone     chan struct{} // non-nil while a probe runs; closed with its verdict
+	probeQuietEnd atomic.Int64  // unix nanos: no new probe before this (under probeMu to start one)
+	probeVerdict  atomic.Int32  // verdictPass, verdictCount or verdictRetry: how 407s in the quiet window are treated
+	probeProven   atomic.Bool   // the credentials have passed at AuthProbe at least once
+	// set when the credentials got a 407 at AuthProbe before they ever passed there: probing stops and 407s count as
+	// without a probe (no extra logins)
+	probeCredsRefused atomic.Bool
+	probeOKAt         atomic.Int64 // unix nanos of the last pass; 407s before it were policy
+
+	mu        sync.Mutex
+	authFails map[string]time.Time // requested destination ("host:port") -> its last 407; expired entries pruned lazily
+	cached    []netip.Addr         // last answer for the upstream's name, as resolved
+	cachedAt  time.Time
+	seen      []netip.Addr // addresses that name has resolved to (unmapped, zone dropped), least recently seen first
+}
+
+func (u *Upstream) probeQuiet() time.Duration {
+	if u.ProbeQuiet > 0 {
+		return u.ProbeQuiet
+	}
+	return defaultProbeQuiet
+}
+
+func (u *Upstream) probeTimeout() time.Duration {
+	if u.ProbeTimeout > 0 {
+		return u.ProbeTimeout
+	}
+	return defaultProbeTimeout
+}
+
+func (u *Upstream) cooldown() time.Duration {
+	if u.AuthCooldown > 0 {
+		return u.AuthCooldown
+	}
+	return defaultAuthCooldown
+}
+
+// authBlocked reports whether dest (the requested "host:port") may not be tried: every destination is blocked once
+// the latch tripped, and a destination that got a 407 itself stays blocked for the cooldown.
+func (u *Upstream) authBlocked(target string, now time.Time) bool {
+	if now.UnixNano() < u.authBlockedUntil.Load() {
+		return true
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	at, ok := u.authFails[target]
+	return ok && now.Sub(at) < u.cooldown()
+}
+
+// record407 notes a 407 in reply to our own CONNECT for dest, the requested "host:port" (never a vetted IP: one
+// destination's addresses rotate). A 407 can also be the upstream's policy for that one destination, so a single
+// destination never blocks the rest: only authLatchTargets distinct destinations within the cooldown (a wrong
+// password fails everywhere) trip the latch. Without credentials there is no password to lock out, so a 407 blocks
+// only its own destination. With an AuthProbe the distinct-destination rule is replaced by the probe: record407
+// then returns true and the caller asks the probe whether the credentials still work.
+func (u *Upstream) record407(dest string, now time.Time) (probe bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.authFails == nil {
+		u.authFails = map[string]time.Time{}
+	}
+	for t, at := range u.authFails {
+		if now.Sub(at) >= u.cooldown() {
+			delete(u.authFails, t)
+		}
+	}
+	if _, ok := u.authFails[dest]; !ok && len(u.authFails) >= maxAuthFails {
+		var oldest string
+		var at time.Time
+		for t, a := range u.authFails {
+			if oldest == "" || a.Before(at) {
+				oldest, at = t, a
+			}
+		}
+		delete(u.authFails, oldest)
+	}
+	u.authFails[dest] = now
+	if u.URL.User == nil {
+		return false // no password to lock out: the 407 blocks only its own destination
+	}
+	if u.AuthProbe != "" {
+		return true // the operator's probe tells a wrong password from the upstream's policy for dest
+	}
+	if len(u.authFails) >= authLatchTargets {
+		u.latchAuth(now) // a wrong password fails everywhere
+	}
+	return false
+}
+
+// latchAuth blocks every destination for the cooldown. Atomic only: record407 calls it with u.mu held.
+func (u *Upstream) latchAuth(now time.Time) {
+	u.authBlockedUntil.Store(now.Add(u.cooldown()).UnixNano())
+}
+
+// failsSincePass counts the destinations that got a 407 after the last probe pass, within the cooldown of now.
+func (u *Upstream) failsSincePass(now time.Time) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	okAt := u.probeOKAt.Load()
+	n := 0
+	for _, at := range u.authFails {
+		if at.UnixNano() > okAt && now.Sub(at) < u.cooldown() {
+			n++
+		}
+	}
+	return n
+}
+
+// latchIfSpread latches once authLatchTargets destinations got a 407 since the last pass (credentials only).
+func (u *Upstream) latchIfSpread(now time.Time) {
+	if u.URL.User != nil && u.failsSincePass(now) >= authLatchTargets {
+		u.latchAuth(now)
+	}
+}
+
+// waitProbe blocks while a probe runs: its verdict decides whether credentials may be sent at all. Bounded by ctx
+// and by the longest a probe can take.
+func (u *Upstream) waitProbe(ctx context.Context) {
+	u.probeMu.Lock()
+	done := u.probeDone
+	u.probeMu.Unlock()
+	if done == nil {
+		return
+	}
+	t := time.NewTimer(2*u.probeTimeout() + time.Second)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-t.C:
+	}
+}
+
+// ParseAuthProbe validates zipReport.upstreamProxy.authProbe: a "host:port" the upstream requires authentication
+// for, sent to it as written and never dialled directly. Errors never echo the input.
+func ParseAuthProbe(s string) error {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || net.JoinHostPort(host, port) != s {
+		return errors.New("authProbe must be host:port")
+	}
+	n := 0
+	if len(port) < 1 || len(port) > 5 || port[0] == '0' {
+		return errors.New("authProbe port must be 1-65535")
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return errors.New("authProbe port must be 1-65535")
+		}
+		n = n*10 + int(port[i]-'0')
+	}
+	if n > 65535 {
+		return errors.New("authProbe port must be 1-65535")
+	}
+	if a, err := netip.ParseAddr(host); err != nil && !PlainHostName(host) || err == nil && a.Zone() != "" {
+		return errors.New("authProbe host is not a valid name or address") // a zone never means anything to the upstream
+	}
+	if NamesThisHost(host) {
+		return errors.New("authProbe must not be on this host")
+	}
+	return nil
+}
+
+// addrs returns the upstream's addresses to dial (the cached answer while fresh, else a new lookup) and, for the
+// destination refusal, the current answer plus the addresses its name resolved to before (up to the
+// maxSeenUpstreamAddrs most recently seen): a rotating DNS answer must not hide one of the upstream's addresses.
+func (u *Upstream) addrs(now time.Time, lookup func() ([]netip.Addr, error)) (dial, refuse []netip.Addr, err error) {
+	u.mu.Lock()
+	if u.cached != nil && now.Sub(u.cachedAt) < upstreamCacheTTL {
+		dial, refuse = u.cached, u.refusals(u.cached)
+		u.mu.Unlock()
+		return dial, refuse, nil
+	}
+	u.mu.Unlock()
+
+	res, err := lookup() // not under mu: a slow resolver must not serialise every job behind it
+	if err != nil {
+		return nil, nil, err
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.cached, u.cachedAt = res, now
+	for _, a := range res {
+		a = a.WithZone("").Unmap() // not norm: ::1 must stay loopback for the on-host checks
+		for i, s := range u.seen {
+			if s == a {
+				u.seen = append(u.seen[:i:i], u.seen[i+1:]...) // re-seen: move to the most recent end
+				break
+			}
+		}
+		u.seen = append(u.seen, a)
+	}
+	if len(u.seen) > maxSeenUpstreamAddrs {
+		u.seen = append([]netip.Addr(nil), u.seen[len(u.seen)-maxSeenUpstreamAddrs:]...)
+	}
+	return res, u.refusals(res), nil
+}
+
+// refusals returns the history plus the current answer, which an answer larger than the history leaves out.
+// Called with mu held.
+func (u *Upstream) refusals(current []netip.Addr) []netip.Addr {
+	refuse := append([]netip.Addr(nil), u.seen...)
+	for _, a := range current {
+		a = a.WithZone("").Unmap()
+		if !slices.Contains(refuse, a) {
+			refuse = append(refuse, a)
+		}
+	}
+	return refuse
+}
+
+// refusalsCached is the refusal list without a lookup: the addresses the upstream's name resolved to recently, in
+// any job, plus the cached answer; stale reports whether that answer is older than upstreamCacheTTL.
+func (u *Upstream) refusalsCached(now time.Time) (refuse []netip.Addr, stale bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.refusals(u.cached), u.cached == nil || now.Sub(u.cachedAt) >= upstreamCacheTTL
+}
+
+// ParseUpstream validates the zipReport.upstreamProxy settings. An empty rawURL disables chaining and returns nil.
+// Errors never include rawURL or any part of it: it may carry a password.
+func ParseUpstream(rawURL, resolve string, noProxy []string) (*Upstream, error) {
+	if rawURL == "" {
+		if (resolve != "" && resolve != "local") || len(noProxy) > 0 {
+			return nil, errors.New("url is required when resolve or noProxy is set")
+		}
+		return nil, nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		// never wrap err: it quotes the whole input, password included
+		return nil, errors.New("url is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		// never echo the scheme: for "user:pass@proxy:3128" it is the username
+		return nil, errors.New("url scheme is not supported; use http or https")
+	}
+	if u.Hostname() == "" {
+		return nil, errors.New("url has no host")
+	}
+	if n, err := strconv.Atoi(u.Port()); err != nil || n < 1 || n > 65535 {
+		return nil, errors.New("url must include a port, e.g. http://proxy:3128")
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("url must not have a path, query or fragment")
+	}
+	if resolve != "" && resolve != "local" && resolve != "upstream" {
+		return nil, fmt.Errorf("resolve %q must be \"local\" or \"upstream\"", resolve)
+	}
+	if resolve == "upstream" && NamesThisHost(u.Hostname()) {
+		return nil, errors.New("resolve \"upstream\" cannot be used with an upstream proxy on this host")
+	}
+	var rules []Rule
+	for i, s := range noProxy {
+		r, err := ParseRule(s)
+		if err != nil {
+			return nil, fmt.Errorf("noProxy[%d]: %w", i, err)
+		}
+		if r.Prefix.IsValid() && !IsPublicAddr(r.Prefix.Addr()) {
+			return nil, fmt.Errorf("noProxy[%d]: only public destinations use the upstream; private ones are always dialled directly", i)
+		}
+		rules = append(rules, r)
+	}
+	return &Upstream{URL: u, ByName: resolve == "upstream", NoProxy: rules, AuthCooldown: defaultAuthCooldown}, nil
+}
+
+// Endpoint returns "scheme://host:port" — the only form of the upstream that may be logged.
+func (u *Upstream) Endpoint() string {
+	return u.URL.Scheme + "://" + net.JoinHostPort(u.Hostname(), u.URL.Port())
+}
+
+// Hostname returns the upstream host, lower-cased, without a trailing dot.
+func (u *Upstream) Hostname() string {
+	return strings.TrimSuffix(strings.ToLower(u.URL.Hostname()), ".")
+}
+
+// LookupName returns the upstream host as it is resolved: Hostname(), plus one trailing dot when the operator wrote
+// the name rooted ("proxy.corp."), so the resolver's search domains are skipped. An IP literal comes back without
+// the dot: it is never a DNS query.
+func (u *Upstream) LookupName() string {
+	h := u.Hostname()
+	if _, err := netip.ParseAddr(h); err == nil || !strings.HasSuffix(u.URL.Hostname(), ".") {
+		return h
+	}
+	return strings.TrimRight(h, ".") + "."
+}
+
+var loopbackNames = map[string]bool{
+	"localhost": true, "localhost.localdomain": true, "localhost4": true, "localhost4.localdomain4": true,
+	"localhost6": true, "localhost6.localdomain6": true, "ip6-localhost": true, "ip6-loopback": true,
+}
+
+// LoopbackName reports whether host is a name that conventionally means this machine: "localhost" and any
+// "*.localhost" (RFC 6761), "localhost.localdomain", "localhost4", "localhost4.localdomain4", "localhost6",
+// "localhost6.localdomain6", "ip6-localhost", "ip6-loopback". Case-insensitive; one trailing dot is ignored.
+func LoopbackName(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(host), ".")
+	return loopbackNames[h] || strings.HasSuffix(h, ".localhost")
+}
+
+// PlainHostName reports whether host is an ASCII host name the egress proxy can reason about: letters, digits,
+// '-' and '_' in non-empty dot-separated labels, one optional trailing dot, and a last label that is not a
+// number: not all digits and not "0x" followed by hex digits (127.1, 2130706433 and 0x7f000001 are addresses to
+// many resolvers and to URL parsers). By-name mode hands only these to the upstream.
+func PlainHostName(host string) bool {
+	h := strings.TrimSuffix(host, ".")
+	if h == "" {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	for _, l := range labels {
+		if l == "" {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+			if !ok {
+				return false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	allDigits := true
+	for i := 0; i < len(last); i++ {
+		if last[i] < '0' || last[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return false
+	}
+	if len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') {
+		for i := 2; i < len(last); i++ {
+			c := last[i]
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// NamesThisHost reports whether host, as configured, names this machine without a lookup: a LoopbackName, or an IP
+// literal that is loopback or unspecified. One trailing dot is ignored, for literals too ("127.0.0.1.").
+func NamesThisHost(host string) bool {
+	if LoopbackName(host) {
+		return true
+	}
+	ip, err := netip.ParseAddr(strings.TrimSuffix(host, "."))
+	return err == nil && OnThisHost(ip, nil)
+}
+
+// InterfaceIPs converts net.InterfaceAddrs results to addresses (IPv4-mapped unmapped); entries of other types are
+// skipped.
+func InterfaceIPs(addrs []net.Addr) []netip.Addr {
+	var out []netip.Addr
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if na, ok := netip.AddrFromSlice(ip); ok {
+			out = append(out, na.Unmap())
+		}
+	}
+	return out
+}
+
+// OnThisHost reports whether ip is loopback, unspecified, or one of ifaces, as given (zone dropped, IPv4-mapped
+// unmapped) or in its NAT64, 6to4 or IPv4-compatible form.
+func OnThisHost(ip netip.Addr, ifaces []netip.Addr) bool {
+	for _, c := range []netip.Addr{ip.WithZone("").Unmap(), norm(ip)} {
+		if c.IsLoopback() || c.IsUnspecified() {
+			return true
+		}
+		for _, a := range ifaces {
+			if a.WithZone("").Unmap() == c {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// direct reports whether a public destination bypasses the upstream: an exact host:port noProxy rule matches, or
+// every vetted address lies inside a noProxy prefix. addrs may be empty (then only host:port rules can match).
+func (u *Upstream) direct(host, port string, addrs []netip.Addr) bool {
+	key := hostPortKey(host, port)
+	for _, r := range u.NoProxy {
+		if r.HostPort != "" && r.HostPort == key {
+			return true
+		}
+	}
+	if len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		a = norm(a)
+		in := false
+		for _, r := range u.NoProxy {
+			if r.Prefix.IsValid() && r.Prefix.Contains(a) {
+				in = true
+				break
+			}
+		}
+		if !in {
+			return false
+		}
+	}
+	return true
+}
+
+// norm returns the canonical form used for address comparisons: unmapped, zone dropped, and the IPv4 address
+// embedded in NAT64 / 6to4 / IPv4-compatible forms (embeddedIPv4, addr.go) when present.
+func norm(a netip.Addr) netip.Addr {
+	a = a.WithZone("").Unmap()
+	if v4, ok := embeddedIPv4(a); ok {
+		return v4
+	}
+	return a
 }

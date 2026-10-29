@@ -37,12 +37,15 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build browser-update to fetch Chrome
-COPY . .
+# Fetch Chrome before copying the rest of the source, so a source change does not download it again
+COPY cmd/browser-update ./cmd/browser-update
+COPY pkg/browser ./pkg/browser
 RUN go build -ldflags="-s -w" -o browser-update ./cmd/browser-update/main.go && \
     ./browser-update
+
+COPY . .
 
 # Mark as Docker environment for --no-sandbox detection
 RUN touch /.dockerenv
 
-CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/...", "./internal/..."]
+CMD ["go", "test", "-v", "-p", "1", "-timeout=10m", "./test/...", "./internal/...", "./pkg/..."]

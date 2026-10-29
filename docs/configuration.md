@@ -14,6 +14,7 @@ The following environment variables can be used to override configuration file v
 | Variable           | Overrides                          | Description                                    |
 |--------------------|------------------------------------|------------------------------------------------|
 | `ZIPREPORT_API_KEY`| `apiServer.authTokenSecret`| API authentication key. Takes precedence over config file. |
+| `ZIPREPORT_UPSTREAM_PROXY`| `zipReport.upstreamProxy.url`| Upstream proxy URL, so a proxy password can stay out of the config file. An empty value does not override, so it cannot turn off a URL set in the file. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are ignored. |
 
 Example:
 ```shell
@@ -94,6 +95,139 @@ Configuration for the ZipReport rendering engine.
 | `concurrency`          | integer | `8`     | Number of concurrent browser instances for parallel rendering.                             |
 | `baseHttpPort`         | integer | `22000` | Base port number for browser instances. Each instance uses baseHttpPort + instance number. Keep baseHttpPort through baseHttpPort+concurrency-1 below the lower bound of `/proc/sys/net/ipv4/ip_local_port_range` (32768 on Linux), or reserve the range with `net.ipv4.ip_local_reserved_ports`; outbound sockets can otherwise take a report port. A warning is logged at startup if they overlap. Must be at least 1024, and `baseHttpPort + concurrency - 1` must not exceed 65535; `apiServer.port` and (when metrics are enabled) `prometheus.port` must lie outside the range, or startup is refused. |
 | `egressAllow`          | array of strings | `[]` | CIDRs or exact `host:port` entries a rendered page may reach in addition to public addresses, e.g. `["10.20.0.0/16", "assets.intranet:443"]`. A bare IP needs `/32` or `/128`. Entries can never open, on loopback and local addresses, other jobs' render ports (the job's own server is reached through its `localhost:PORT` name), the job's own proxy port, the API port or, if enabled, the metrics port. Allowing loopback ranges still exposes other local services, including other jobs' egress proxies and Chrome's DevTools port; an entry covering Kubernetes Service/pod or Docker bridge CIDRs can reach this or other replicas' API and metrics ports through non-local addresses, which the hard-deny list does not cover. |
+| `upstreamProxy.url`    | string  | `""`    | `http://[user:pass@]host:port` or `https://...` of a proxy to chain public traffic through. Empty disables chaining. See [Upstream proxy](#upstream-proxy). |
+| `upstreamProxy.resolve`| string  | `"local"` | `"local"`: send the upstream the vetted IP. `"upstream"`: send it the host name, which **moves the security boundary to the upstream**. See [Upstream proxy](#upstream-proxy). |
+| `upstreamProxy.noProxy`| array of strings | `[]` | Public CIDRs or exact `host:port` entries dialled directly instead of through the upstream (still vetted). A CIDR whose network address is not public is rejected at startup (exact host:port entries are not checked); private destinations are always dialled directly anyway. |
+| `upstreamProxy.authProbe`| string | `""` | `host:port` your proxy requires authentication for and lets this account reach (port 443 or another port your proxy allows before its auth rule; an origin it reaches quickly). With credentials in `url`, a `407` for another destination is checked against it, so a page cannot block upstream use by requesting destinations your proxy refuses with `407`. Sent to the proxy as written; must not be on this host or be the proxy itself (its configured name, or an IP literal of its address, at its port; another name for the proxy is not detected). An IPv6 zone (`%eth0`) is refused. See [Upstream proxy](#upstream-proxy). |
+
+#### Upstream proxy
+
+By default the per-job egress proxy dials every destination directly. Set `upstreamProxy.url` when the server can only
+reach the internet through an HTTP(S) proxy. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` stay ignored.
+
+```json
+"upstreamProxy": {
+  "url": "http://proxy.corp.example:3128",
+  "resolve": "local",
+  "noProxy": ["cdn.example.com:443"]
+}
+```
+
+**What goes through the upstream**
+
+- Only **public** destinations. Anything reachable only because of `egressAllow` (loopback, private, local-interface
+  addresses) is always dialled directly, and so are `noProxy` entries.
+- New connections from a rendered page to the upstream proxy's known addresses are refused. With `resolve: "local"`
+  this covers every address its name currently resolves to and the 64 it most recently resolved to, on all ports;
+  while its name resolves, an address it moves to during a job is refused within about 30 s. Connections a page
+  already holds are not re-checked, and upstream instances that never appear in DNS for its name are not known. With
+  `"upstream"` only its configured name and those addresses are refused, so an alias the upstream resolves to itself
+  is not.
+- Because every port of the upstream's addresses is refused, an upstream on `127.0.0.1` (e.g. a cntlm/px sidecar)
+  makes `egressAllow` destinations on `127.0.0.1` unreachable. If you need loopback `egressAllow` destinations, make
+  the upstream listen on a dedicated loopback address such as `127.0.0.2`.
+
+**`resolve: "local"` (default)**
+
+The egress proxy resolves and vets every destination itself, then asks the upstream for a tunnel to the **vetted IP**
+(`CONNECT 93.184.216.34:443`). Plain `http://` assets travel in a `CONNECT <ip>:80` tunnel. Every egress guarantee
+still holds. The cost:
+
+- **Squid's default `http_access deny CONNECT !SSL_ports` blocks port 80 and every non-443 https port.** Allow them
+  for plain-http or non-443 assets.
+- Proxies that allow-list by host name or refuse IP destinations reject this mode entirely.
+
+**`resolve: "upstream"` (opt-in)**
+
+Hands the upstream the **host name** (`CONNECT cdn.example.com:443`), for proxies that filter by name and networks
+where only the proxy can resolve internet names. **This moves the security boundary to the upstream proxy:**
+
+- The upstream resolves every host name again itself, even one the egress proxy resolved and checked, so DNS
+  rebinding works.
+- Any name the local resolver cannot resolve is handed over unchecked, so a page can reach anything the upstream can
+  reach, including the upstream host's own loopback services.
+- **Never use it with an upstream that shares this server's network namespace** (same host, or a sidecar in the same
+  pod, even addressed through a Service IP): the upstream's loopback is then this server's loopback, Chrome's
+  DevTools port becomes reachable and a page could take over the browser. The server refuses the mode only when it
+  can detect a same-host upstream (it resolves to a loopback or local-interface address); a Service IP cannot be
+  detected.
+- An exact `egressAllow` `host:port` entry needs a locally resolvable name in this mode.
+- Every name on a reserved port (the report port range, the job's proxy port, `apiServer.port`, and `prometheus.port`
+  when metrics are enabled) is refused, even a public one. A name with an exact `egressAllow` `host:port` entry is
+  resolved and vetted by address instead.
+- Only plain ASCII host names (letters, digits, `-`, `_`, dots) are handed to the upstream; numeric forms such as
+  `127.1` or `0x7f000001`, raw non-ASCII names and malformed hosts are refused. International domain names still work:
+  Chrome sends them in punycode (`xn--`).
+
+**Destination ACLs on the upstream are required** in this mode, covering every range the server itself refuses.
+100.64.0.0/10 holds some cloud metadata services (e.g. 100.100.100.200). The NAT64, 6to4 and IPv4-compatible forms
+are needed only if the upstream can reach IPv4 through NAT64 or 6to4. For Squid:
+
+```
+acl private_dst dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 0.0.0.0/8 192.0.0.0/24
+acl private_dst dst 198.18.0.0/15 240.0.0.0/4 168.63.129.16/32 fc00::/7 fe80::/10 fec0::/10 64:ff9b:1::/48 224.0.0.0/4 ff00::/8
+# their IPv4-compatible, 6to4 and NAT64 forms
+acl private_dst dst ::/96 2002::/16 64:ff9b::/104 64:ff9b::a00:0/104 64:ff9b::6440:0/106 64:ff9b::7f00:0/104
+acl private_dst dst 64:ff9b::a9fe:0/112 64:ff9b::ac10:0/108 64:ff9b::c000:0/120 64:ff9b::c0a8:0/112
+acl private_dst dst 64:ff9b::c612:0/111 64:ff9b::f000:0/100 64:ff9b::a83f:8110/128 64:ff9b::e000:0/100
+
+http_access deny to_localhost
+http_access deny private_dst
+```
+
+**Authentication**
+
+- Basic proxy auth only, from the URL userinfo (`http://user:pass@proxy:3128`). Set `ZIPREPORT_UPSTREAM_PROXY` instead
+  of `upstreamProxy.url` to keep the password out of the config file. Percent-encode every character in the user name or
+  password other than letters, digits and `-._~!$&'()*+,;=` (notably `%`, `/`, `?`, `#`, `@`, spaces, and `:` in the
+  user name). With an `http://` upstream the credentials cross the network in clear text.
+- A `407` in reply to a tunnel request blocks that destination (the requested `host:port`, whatever address it
+  resolves to) for 5 minutes.
+- With `upstreamProxy.authProbe` set (and credentials configured), the server then checks `CONNECT <authProbe>` without
+  and with credentials, at most once every 2 seconds, and sooner after three `407`s since it last passed. Tunnel and
+  plain-http requests through the upstream wait for the answer. A `407` with credentials, after they have worked
+  there, blocks all upstream use for 5 minutes. Any other answer with credentials means the first `407` was the proxy's
+  policy for that destination, and nothing else is blocked.
+- If `authProbe` answers without credentials, is an IP address of the proxy itself, or the credentials never worked
+  there, three `407`s for different destinations within 5 minutes block all upstream use, as without `authProbe`
+  (`authProbe misconfigured` may appear as the job's last upstream error). The first time the credentials are refused at
+  `authProbe`, the server stops probing until restart, so a wrong password costs no more attempts than without
+  `authProbe`. If it cannot be reached or gives any other answer without credentials after the credentials have worked,
+  `407`s only block their own destination until it answers again (`authProbe unavailable`). Once the credentials have
+  worked at `authProbe`, a later `407` there always blocks all upstream use: if you change the proxy rules for
+  `authProbe`, restart the server.
+- Without `authProbe`: `407`s for three different destinations within 5 minutes block all upstream use for
+  5 minutes. If your proxy answers `407` (not `403`) for destinations it denies, a page can trigger this; set
+  `authProbe` or make the proxy deny with `403`. Without credentials there is no password to lock out, and a `407` only
+  blocks its own destination.
+- This throttles a wrong password; it does not prevent a lockout. Tunnel requests already on their way when the first
+  `407` arrives (Chrome loads in parallel, and all jobs share the upstream) each send the password. Without
+  `authProbe`, three more attempts are made after every cool-down. With it, after a password change, the requests in
+  flight plus up to three more and the probe are made, or, while `authProbe` is unreachable after it has worked, one
+  attempt per new destination. Fix or rotate the password promptly.
+- Each probe opens and closes a tunnel to `authProbe` through your proxy, and requests through it wait while a probe
+  runs. `authProbe` needs credentials in `url`, and works only if your proxy checks credentials before its other rules
+  and answers wrong credentials at `authProbe` with `407` (not `403` or a `5xx`).
+- With `resolve: "upstream"`, plain-`http://` requests are relayed to the upstream and a `407` on them is passed to
+  the page unchanged (it may come from the origin). They never trip the latch, and each sends the password until a
+  tunnel request (`https://`) trips it.
+
+**Operations**
+
+- The upstream's name is resolved when a job starts; the job dials only those addresses. While it runs, the name is
+  re-checked at most every 30 s, only to refuse addresses it has moved to (jobs that start later dial the new answer;
+  answers are reused for 30 s). While it cannot be resolved, new renders fail; a failed re-check during a job keeps
+  the addresses already known. A name written with a trailing dot (`proxy.corp.`) is looked up exactly as written,
+  without the resolver's search domains; it must then resolve in DNS as written (an `/etc/hosts` entry matches a
+  rooted name only with Go's built-in resolver, which the Docker image always uses, not when lookups go through
+  glibc).
+- Upstream failures are counted and logged per job (relayed by-name responses are not). An upstream error page can be
+  relayed to the page and so appear in the PDF.
+- If the upstream is configured as this host (a loopback name or address, `0.0.0.0` or `[::]`), its port must not be
+  `apiServer.port`, `prometheus.port` (metrics enabled) or inside the report port range, or startup is refused.
+- An `https://` upstream is verified against the system trust store. For an internal CA, add it to the image's
+  trust store, or mount a directory holding it and set `SSL_CERT_DIR` (the default bundle is still read).
+  `SSL_CERT_FILE` replaces the default bundle for the whole process, so point it only at a full bundle.
 
 ### log
 
@@ -223,6 +357,12 @@ The secret is not part of this example: supply `apiServer.authTokenSecret` (at l
    `rod` environment variable is no longer honoured. Chrome runs with site isolation enabled, which starts more renderer
    processes per job, so container memory limits may need raising. Site isolation only contains a renderer exploit when
    Chrome's sandbox is on; in containers Chrome runs with `--no-sandbox`.
+
+7. **Renderer compromise**: Chrome runs as the server's user, so in containers (no sandbox, item 6) a renderer exploit
+   can read the config file, mounted secret files and the environment of this server's processes
+   (`/proc/<pid>/environ`). `ZIPREPORT_API_KEY` and `ZIPREPORT_UPSTREAM_PROXY` keep secrets out of the image and config
+   file, not out of reach of a compromised renderer. Keep the bundled Chrome current and give the upstream proxy account
+   only the access reports need.
 
 ## Environment Variables
 
